@@ -19,6 +19,7 @@ struct DashboardTemplate {
 struct KeysTemplate {
     active_page: &'static str,
     keys: Vec<KeyViewModel>,
+    admin_key: String,
 }
 
 struct TunnelViewModel {
@@ -66,6 +67,13 @@ pub async fn dashboard(
 pub async fn keys_page(
     State(state): State<AppState>,
 ) -> Result<Html<String>, (axum::http::StatusCode, String)> {
+    let admin_key = state
+        .store
+        .find_admin_key()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or_default();
+
     let keys: Vec<KeyViewModel> = state
         .store
         .load()
@@ -82,6 +90,7 @@ pub async fn keys_page(
     let tmpl = KeysTemplate {
         active_page: "keys",
         keys,
+        admin_key,
     };
 
     tmpl.render()

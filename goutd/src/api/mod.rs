@@ -34,8 +34,8 @@ pub fn build_router(
 
     // Key 管理 API → 需要 admin key
     let key_routes = Router::new()
-        .route("/", post(create_key).get(list_keys))
-        .route("/:key", delete(delete_key))
+        .route("/", post(api_create_key).get(api_list_keys))
+        .route("/:key", delete(api_delete_key))
         .layer(middleware::from_fn(auth::require_admin_key))
         .layer(axum::Extension(store.clone()));
 
@@ -47,10 +47,11 @@ pub fn build_router(
         .layer(axum::Extension(store.clone()));
 
     Router::new()
-        // Web 面板（localhost-only，无额外认证）
+        // Web 面板（localhost-only，无需认证）
         .route("/", get(|| async { Redirect::to("/dashboard") }))
         .route("/dashboard", get(web::dashboard))
         .route("/keys", get(web::keys_page).post(web_key_create))
+        .route("/keys/delete/:key", post(web_key_delete))
         // API
         .nest("/api/v1/keys", key_routes)
         .nest("/api/v1/tunnels", tunnel_routes)
@@ -84,9 +85,26 @@ async fn web_key_create(
     }
 }
 
+#[derive(Deserialize)]
+struct WebKeyDeleteForm {
+    _method: Option<String>,
+}
+
+/// Web 面板删除 key handler（localhost-only，跳过 admin key）
+async fn web_key_delete(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Form(_form): Form<WebKeyDeleteForm>,
+) -> impl IntoResponse {
+    match state.store.delete(&key).await {
+        Ok(_) => Redirect::to("/keys").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 // ━━━ Key CRUD API handler（管理员用）━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async fn create_key(
+async fn api_create_key(
     State(state): State<AppState>,
     Json(req): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
@@ -117,7 +135,7 @@ async fn create_key(
     }
 }
 
-async fn list_keys(
+async fn api_list_keys(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     match state.store.load().await {
@@ -141,7 +159,7 @@ async fn list_keys(
     }
 }
 
-async fn delete_key(
+async fn api_delete_key(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {

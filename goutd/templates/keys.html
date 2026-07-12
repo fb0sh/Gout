@@ -3,7 +3,12 @@
 {% block content %}
 <h1>API Key 管理</h1>
 
-<form method="POST" action="/api/v1/keys">
+<div class="admin-key-box">
+    <label>Admin API Key（用于 API 调用：X-Admin-Key header）</label>
+    <div class="key">{{ admin_key }}</div>
+</div>
+
+<form method="POST" action="/keys">
     <input type="text" name="name" placeholder="备注名称，如"我的笔记本"" required style="flex:1">
     <button type="submit" class="btn btn-primary">创建 Key</button>
 </form>
@@ -27,8 +32,7 @@
             <td class="mono">{{ k.key }}</td>
             <td>{{ k.name }}</td>
             <td>
-                <form method="POST" action="/api/v1/keys/{{ k.key }}/delete" style="display:inline;margin:0" onsubmit="return confirm('确定删除 key {{ k.name }}？')">
-                    <input type="hidden" name="_method" value="DELETE">
+                <form method="POST" action="/keys/delete/{{ k.key }}" style="display:inline;margin:0" onsubmit="return confirm('确定删除 key {{ k.name }}？')">
                     <button type="submit" class="btn btn-danger">删除</button>
                 </form>
             </td>

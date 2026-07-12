@@ -93,6 +93,12 @@ impl KeyStore {
         Ok(keys.iter().any(|k| k.key == key && !k.admin))
     }
 
+    /// 获取第一个 admin key（用于 Web 面板展示）
+    pub async fn find_admin_key(&self) -> Result<Option<String>> {
+        let keys = self.load().await?;
+        Ok(keys.into_iter().find(|k| k.admin).map(|k| k.key))
+    }
+
     /// 根据 API key 查找名称
     pub async fn find_name(&self, key: &str) -> Result<Option<String>> {
         let keys = self.load().await?;
