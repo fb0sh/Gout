@@ -26,7 +26,7 @@ fn cmd_list() -> Result<()> {
         if tunnels.is_empty() {
             println!("[*] no active tunnels");
         } else {
-            println!("{:<20}  {:>5}  {:>4}  {:>7}", "TOKEN", "PORT", "TYPE", "STATUS");
+            println!("{:<20}  {:>5}  {:>4}  {:>7}", "TUNNEL_ID", "PORT", "TYPE", "STATUS");
             for t in &tunnels {
                 let status = if t.has_signal { "active" } else { "waiting" };
                 println!("{:<20}  {:>5}  {:>4}  {:>7}", t.token.to_string(), t.public_port, t.tunnel_type, status);
