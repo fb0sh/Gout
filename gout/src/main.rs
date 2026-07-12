@@ -12,9 +12,7 @@ fn main() -> Result<()> {
 /// 处理 `login` 命令
 fn cmd_login(server: &str, key: &str) -> Result<()> {
     config::write(server, key)?;
-    println!("✅ 凭据已保存到 ~/.goutrc");
-    println!("   服务器: {server}");
-    println!("   使用方式: gout tcp <port>");
+    println!("[+] saved to ~/.goutrc (server: {server})");
     Ok(())
 }
 
@@ -26,19 +24,13 @@ fn cmd_list() -> Result<()> {
         let gout = gout_api::client::GoutClient::new(&cfg.server.addr, &cfg.server.api_key);
         let tunnels = gout.list_tunnels().await?;
         if tunnels.is_empty() {
-            println!("No active tunnels");
+            println!("[*] no active tunnels");
         } else {
-            println!("{:<8} {:<6} {:<12} {:<6} {}", "TOKEN", "TYPE", "PUBLIC", "KEY", "STATUS");
+            println!("{:>8}  {:>5}  {:>4}  {}", "TOKEN", "PORT", "TYPE", "STATUS");
             for t in &tunnels {
                 let status = if t.has_signal { "active" } else { "waiting" };
-                println!(
-                    "{:<8} {:<6} {:<12} {:<6} {}",
-                    &t.token.to_string()[..8.min(t.token.to_string().len())],
-                    t.tunnel_type,
-                    t.public_port,
-                    t.key_name,
-                    status,
-                );
+                let token_short = &t.token.to_string()[..8.min(t.token.to_string().len())];
+                println!("{:>8}  {:>5}  {:>4}  {}", token_short, t.public_port, t.tunnel_type, status);
             }
         }
         Ok(())
@@ -49,7 +41,6 @@ fn cmd_list() -> Result<()> {
 fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
     let cfg = config::read()?;
     let tt = gout_api::TunnelType::parse(tunnel_type);
-    println!("🔗 创建 {tunnel_type} 隧道 {local_port} → {}", cfg.server.addr);
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {

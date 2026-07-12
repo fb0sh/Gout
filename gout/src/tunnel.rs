@@ -20,12 +20,12 @@ impl TunnelSession {
         let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
         let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
 
-        println!("✅ 隧道已创建");
-        println!("   公网端口: {}  →  localhost:{}", tunnel.public_port, local_port);
-        println!("   数据端口: {}", tunnel.data_port);
+        let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
+        println!("[+] {} tunnel: {}:{} <- 127.0.0.1:{}",
+            tunnel_type, server_host, tunnel.public_port, local_port);
 
         // 连接数据端口 + 握手
-        let data_addr = format!("{}:{}", server_host(&config.server.addr), tunnel.data_port);
+        let data_addr = format!("{}:{}", server_host, tunnel.data_port);
         let mut stream = TcpStream::connect(&data_addr)
             .await
             .context("connect to data port failed")?;
@@ -36,15 +36,15 @@ impl TunnelSession {
             tunnel_type,
         ).await.context("handshake failed")?;
 
-        println!("   信号通道已建立，等待外部连接...");
-        println!("   隧道已就绪！");
+        println!("[+] signal channel established, waiting for connections...");
+        println!("    Ctrl+C to close tunnel");
 
         // 进入信号循环
         Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port).await?;
 
         // 清理
+        println!("[-] closing tunnel...");
         gout.delete_tunnel(tunnel.token).await.ok();
-        println!("隧道已关闭");
 
         Ok(Self {
             token: tunnel.token,
@@ -62,8 +62,6 @@ impl TunnelSession {
         tunnel_type: TunnelType,
         local_port: u16,
     ) -> Result<()> {
-        println!("   按 Ctrl+C 关闭隧道");
-
         let mut buf = [0u8; 1];
         loop {
             tokio::select! {
@@ -81,7 +79,7 @@ impl TunnelSession {
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    println!("\n正在关闭隧道...");
+                    println!("[-] closing tunnel...");
                     break;
                 }
             }
@@ -96,29 +94,26 @@ impl TunnelSession {
         tunnel_type: TunnelType,
         local_port: u16,
     ) {
-        let data_addr = format!("{}:8081", server_host(&config.server.addr));
+        let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
+        let data_addr = format!("{server_host}:8081");
         let mut stream = match TcpStream::connect(&data_addr).await {
             Ok(s) => s,
-            Err(e) => { eprintln!("connect data port failed: {e}"); return; }
+            Err(e) => { eprintln!("[-] connect data port failed: {e}"); return; }
         };
 
         if gout_api::data_channel::client_handshake(&mut stream, token, tunnel_type).await.is_err() {
-            eprintln!("data channel handshake rejected");
+            eprintln!("[-] data channel handshake rejected");
             return;
         }
 
         let local = match TcpStream::connect(format!("127.0.0.1:{local_port}")).await {
             Ok(s) => s,
             Err(_) => {
-                eprintln!("连接 localhost:{local_port} 失败 — 本地服务未启动？");
+                eprintln!("[-] localhost:{local_port} not reachable — service not running?");
                 return;
             }
         };
 
         gout_api::data_channel::pipe_bidirectional(stream, local).await;
     }
-}
-
-fn server_host(addr: &str) -> &str {
-    addr.split(':').next().unwrap_or(addr)
 }
