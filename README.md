@@ -1,5 +1,10 @@
 # Gout
 
+[![crates.io](https://img.shields.io/crates/v/gout.svg)](https://crates.io/crates/gout)
+[![crates.io](https://img.shields.io/crates/v/goutd.svg)](https://crates.io/crates/goutd)
+[![crates.io](https://img.shields.io/crates/v/gout-api.svg)](https://crates.io/crates/gout-api)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 受 frp 和 rathole 启发的轻量级内网穿透工具。一行命令将本地服务暴露到公网。
 
 ## 特点
@@ -25,6 +30,25 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 - **gout-api** — Rust SDK：协议类型、`GoutClient`（隧道操作）、`GoutAdminClient`（管理操作）、`data_channel`（握手/pipe）
 - **gout** — CLI 客户端：login/tcp/udp/http 子命令；读取 `~/.goutrc`
 - **goutd** — 服务端守护进程：axum HTTP 服务器 + tokio 数据通道 TCP 服务器
+
+## 安装
+
+```bash
+cargo install goutd    # 服务端
+cargo install gout     # 客户端
+```
+
+或从源码编译：
+```bash
+git clone https://github.com/fb0sh/Gout.git
+cd Gout
+cargo build -p goutd -p gout
+```
+
+Rust SDK（在 `Cargo.toml` 中添加）：
+```toml
+gout-api = "0.1"
+```
 
 ## 快速开始
 

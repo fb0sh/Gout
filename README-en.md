@@ -1,5 +1,10 @@
 # Gout
 
+[![crates.io](https://img.shields.io/crates/v/gout.svg)](https://crates.io/crates/gout)
+[![crates.io](https://img.shields.io/crates/v/goutd.svg)](https://crates.io/crates/goutd)
+[![crates.io](https://img.shields.io/crates/v/gout-api.svg)](https://crates.io/crates/gout-api)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A lightweight reverse proxy / tunnel tool inspired by frp and rathole. Expose your local service to the public internet with a single command.
 
 ## Features
@@ -25,6 +30,25 @@ Three crates:
 - **gout-api** — Rust SDK: protocol types, `GoutClient` (tunnel ops), `GoutAdminClient` (management), `data_channel` (handshake/pipe)
 - **gout** — CLI client: login, tcp, udp, http subcommands; reads `~/.goutrc`
 - **goutd** — server daemon: axum HTTP server + tokio raw TCP data server
+
+## Install
+
+```bash
+cargo install goutd    # server
+cargo install gout     # client
+```
+
+Or build from source:
+```bash
+git clone https://github.com/fb0sh/Gout.git
+cd Gout
+cargo build -p goutd -p gout
+```
+
+Rust SDK (add to `Cargo.toml`):
+```toml
+gout-api = "0.1"
+```
 
 ## Quick Start
 
