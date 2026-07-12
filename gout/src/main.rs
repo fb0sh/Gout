@@ -18,6 +18,33 @@ fn cmd_login(server: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// 处理 `list` 命令
+fn cmd_list() -> Result<()> {
+    let cfg = config::read()?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let gout = gout_api::client::GoutClient::new(&cfg.server.addr, &cfg.server.api_key);
+        let tunnels = gout.list_tunnels().await?;
+        if tunnels.is_empty() {
+            println!("No active tunnels");
+        } else {
+            println!("{:<8} {:<6} {:<12} {:<6} {}", "TOKEN", "TYPE", "PUBLIC", "KEY", "STATUS");
+            for t in &tunnels {
+                let status = if t.has_signal { "active" } else { "waiting" };
+                println!(
+                    "{:<8} {:<6} {:<12} {:<6} {}",
+                    &t.token.to_string()[..8.min(t.token.to_string().len())],
+                    t.tunnel_type,
+                    t.public_port,
+                    t.key_name,
+                    status,
+                );
+            }
+        }
+        Ok(())
+    })
+}
+
 /// 处理 `tcp/udp/http` 命令
 fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
     let cfg = config::read()?;

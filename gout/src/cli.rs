@@ -33,6 +33,8 @@ pub enum Command {
         /// 本地端口号
         port: u16,
     },
+    /// 列出活跃隧道
+    List,
 }
 
 impl Cli {
@@ -43,6 +45,7 @@ impl Cli {
             Command::Tcp { port } => crate::cmd_tunnel("tcp", port),
             Command::Udp { port } => crate::cmd_tunnel("udp", port),
             Command::Http { port } => crate::cmd_tunnel("http", port),
+            Command::List => crate::cmd_list(),
         }
     }
 }

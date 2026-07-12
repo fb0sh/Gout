@@ -99,6 +99,18 @@ pub fn encode_udp_frame(data: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// 隧道列表条目（GET /api/v1/tunnels 返回）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TunnelListEntry {
+    #[serde(with = "serde_u64_str")]
+    pub token: u64,
+    pub tunnel_type: String,
+    pub public_port: u16,
+    pub key_name: String,
+    pub has_signal: bool,
+    pub pending_count: usize,
+}
+
 /// 解码 UDP 帧头
 pub fn decode_udp_header(buf: &[u8; UDP_FRAME_HEADER]) -> u16 {
     u16::from_be_bytes(*buf)

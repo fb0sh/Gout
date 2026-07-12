@@ -11,13 +11,33 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::tunnel::TunnelManager;
-use gout_api::{ApiResponse, CreateTunnelRequest, TunnelResponse};
+use crate::tunnel::{TunnelInfo, TunnelManager};
+use gout_api::{ApiResponse, CreateTunnelRequest, TunnelListEntry, TunnelResponse};
 
 #[derive(Clone)]
 pub struct AppState {
     pub tunnel_mgr: Arc<TunnelManager>,
     pub store: Arc<crate::store::KeyStore>,
+}
+
+pub async fn list_tunnels(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let tunnels: Vec<TunnelListEntry> = state
+        .tunnel_mgr
+        .list_tunnels()
+        .await
+        .into_iter()
+        .map(|t: TunnelInfo| TunnelListEntry {
+            token: t.token,
+            tunnel_type: t.tunnel_type.as_str().to_string(),
+            public_port: t.public_port,
+            key_name: t.key_name,
+            has_signal: t.has_signal,
+            pending_count: t.pending_count,
+        })
+        .collect();
+    (StatusCode::OK, Json(ApiResponse::ok(tunnels))).into_response()
 }
 
 pub async fn create_tunnel(

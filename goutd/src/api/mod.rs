@@ -41,7 +41,7 @@ pub fn build_router(
 
     // 隧道 API → 需要隧道 key
     let tunnel_routes = Router::new()
-        .route("/", post(tunnels::create_tunnel))
+        .route("/", get(tunnels::list_tunnels).post(tunnels::create_tunnel))
         .route("/:token", delete(tunnels::delete_tunnel))
         .layer(middleware::from_fn(auth::require_tunnel_key))
         .layer(axum::Extension(store.clone()));

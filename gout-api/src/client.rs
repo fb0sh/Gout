@@ -63,6 +63,23 @@ impl GoutClient {
         api_resp.data.context("no tunnel data in response")
     }
 
+    /// 列出所有活跃隧道。
+    pub async fn list_tunnels(&self) -> Result<Vec<crate::TunnelListEntry>> {
+        let resp = self
+            .inner
+            .get(format!("{}/api/v1/tunnels", self.base))
+            .header("X-Api-Key", &self.api_key)
+            .send()
+            .await
+            .context("REST list tunnels failed")?;
+
+        let api_resp: ApiResponse<Vec<crate::TunnelListEntry>> = resp
+            .json()
+            .await
+            .context("parse list tunnels response")?;
+        Ok(api_resp.data.unwrap_or_default())
+    }
+
     /// 删除隧道。
     pub async fn delete_tunnel(&self, token: u64) -> Result<()> {
         let resp = self
