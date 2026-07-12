@@ -1,11 +1,13 @@
 /// Web 面板 handler。
 
 use askama::Template;
-use axum::{extract::State, response::Html};
+use axum::{extract::State, response::{Html, IntoResponse}};
 
 use super::api::tunnels::AppState;
 use crate::store::KeyEntry;
 use crate::tunnel::TunnelInfo;
+
+pub(crate) mod auth;
 
 #[derive(Template)]
 #[template(path = "dashboard.html")]
@@ -22,6 +24,12 @@ struct KeysTemplate {
     admin_key: String,
 }
 
+#[derive(Template)]
+#[template(path = "login.html")]
+struct LoginTemplate {
+    error: Option<String>,
+}
+
 struct TunnelViewModel {
     token: u64,
     tunnel_type: String,
@@ -34,6 +42,43 @@ struct TunnelViewModel {
 struct KeyViewModel {
     key: String,
     name: String,
+}
+
+/// 登录页面
+pub async fn login_page() -> Html<String> {
+    let tmpl = LoginTemplate { error: None };
+    Html(tmpl.render().unwrap_or_default())
+}
+
+/// 登录表单提交
+pub async fn login_post(
+    State(state): State<AppState>,
+    axum::Form(form): axum::Form<LoginForm>,
+) -> axum::response::Response {
+    let is_valid = state.store.validate_admin(&form.key).await.unwrap_or(false);
+    if !is_valid {
+        let tmpl = LoginTemplate { error: Some("无效的 admin key".into()) };
+        return (axum::http::StatusCode::UNAUTHORIZED, Html(tmpl.render().unwrap_or_default())).into_response();
+    }
+
+    let cookie = format!("gout_admin_session={}; Max-Age=86400; Path=/; HttpOnly", form.key);
+    (
+        [(axum::http::header::SET_COOKIE, cookie)],
+        axum::response::Redirect::to("/dashboard"),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct LoginForm {
+    key: String,
+}
+
+pub async fn logout() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::SET_COOKIE, "gout_admin_session=; Max-Age=0; Path=/")],
+        axum::response::Redirect::to("/login"),
+    )
 }
 
 pub async fn dashboard(

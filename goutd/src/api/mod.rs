@@ -46,15 +46,29 @@ pub fn build_router(
         .layer(middleware::from_fn(auth::require_tunnel_key))
         .layer(axum::Extension(store.clone()));
 
-    Router::new()
-        // Web 面板（localhost-only，无需认证）
-        .route("/", get(|| async { Redirect::to("/dashboard") }))
+    // Web 面板 — 公开路由（登录/退出）
+    let web_pub = Router::new()
+        .route("/login", get(web::login_page).post(web::login_post))
+        .route("/logout", get(web::logout))
+        .route("/", get(|| async { Redirect::to("/dashboard") }));
+
+    // Web 面板 — 需要登录
+    let web_auth = Router::new()
         .route("/dashboard", get(web::dashboard))
         .route("/keys", get(web::keys_page).post(web_key_create))
         .route("/keys/delete/:key", post(web_key_delete))
-        // API
+        .layer(middleware::from_fn(web::auth::require_web_auth))
+        .layer(axum::Extension(store.clone()));
+
+    // API
+    let api_routes = Router::new()
         .nest("/api/v1/keys", key_routes)
-        .nest("/api/v1/tunnels", tunnel_routes)
+        .nest("/api/v1/tunnels", tunnel_routes);
+
+    Router::new()
+        .merge(web_pub)
+        .merge(web_auth)
+        .merge(api_routes)
         .with_state(state)
 }
 
