@@ -23,6 +23,6 @@ pub struct ServerConfig {
     pub port_end: u16,
 
     /// 数据存储目录（keys.toml 存放位置）
-    #[arg(long, default_value = "./data")]
+    #[arg(long, default_value = "./gout-data")]
     pub data_dir: PathBuf,
 }
