@@ -72,6 +72,7 @@ pub async fn keys_page(
         .await
         .map_err(|e: anyhow::Error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .into_iter()
+        .filter(|k: &KeyEntry| !k.admin)
         .map(|k: KeyEntry| KeyViewModel {
             key: mask_key(&k.key),
             name: k.name,
