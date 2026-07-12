@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use gout_proto::TunnelType;
+use gout_api::TunnelType;
 
 // ━━━ 类型 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -87,7 +87,7 @@ impl TunnelManager {
         bind_ip: std::net::IpAddr,
     ) -> Result<(Token, u16), String> {
         let port = self.allocate_port().await.ok_or("no free ports")?;
-        let token = gout_proto::generate_token();
+        let token = gout_api::generate_token();
 
         let tunnel = Tunnel {
             token,

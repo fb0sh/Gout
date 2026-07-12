@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gout-proto = { path = "../gout-proto" }
+gout-api = { path = "../gout-api" }
 tokio = { version = "1", features = ["full"] }
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }

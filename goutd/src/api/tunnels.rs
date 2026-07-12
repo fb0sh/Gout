@@ -12,7 +12,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::tunnel::TunnelManager;
-use gout_proto::{ApiResponse, CreateTunnelRequest, TunnelResponse};
+use gout_api::{ApiResponse, CreateTunnelRequest, TunnelResponse};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -71,7 +71,7 @@ pub async fn delete_tunnel(
     match state.tunnel_mgr.close_tunnel(token).await {
         Ok(()) => (
             StatusCode::OK,
-            Json(gout_proto::api_ok()),
+            Json(gout_api::api_ok()),
         )
             .into_response(),
         Err(e) => (

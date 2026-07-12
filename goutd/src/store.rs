@@ -115,7 +115,7 @@ pub async fn ensure_initial_key(store: &KeyStore) -> Result<String> {
     if keys.iter().any(|k| k.admin) {
         return Ok(String::new());
     }
-    let api_key = gout_proto::generate_api_key();
+    let api_key = gout_api::generate_api_key();
     let now: DateTime<Utc> = Utc::now();
     store
         .add(KeyEntry {

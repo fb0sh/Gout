@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::store::KeyEntry;
 use crate::tunnel::TunnelManager;
 use crate::web;
-use gout_proto::{
+use gout_api::{
     api_ok, ApiResponse, CreateKeyRequest, CreateKeyResponse, KeyInfo,
 };
 
@@ -68,7 +68,7 @@ async fn web_key_create(
     State(state): State<AppState>,
     Form(form): Form<WebKeyCreateForm>,
 ) -> impl IntoResponse {
-    let api_key = gout_proto::generate_api_key();
+    let api_key = gout_api::generate_api_key();
     let now = chrono::Utc::now();
 
     let entry = KeyEntry {
@@ -90,7 +90,7 @@ async fn create_key(
     State(state): State<AppState>,
     Json(req): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
-    let api_key = gout_proto::generate_api_key();
+    let api_key = gout_api::generate_api_key();
     let now = chrono::Utc::now();
 
     let entry = KeyEntry {

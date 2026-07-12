@@ -503,7 +503,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
- "gout-proto",
+ "gout-api",
  "reqwest",
  "serde",
  "serde_json",
@@ -515,12 +515,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "gout-proto"
+name = "gout-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "rand",
+ "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 
@@ -533,7 +536,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "gout-proto",
+ "gout-api",
  "rand",
  "serde",
  "serde_json",

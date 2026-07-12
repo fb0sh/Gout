@@ -2,10 +2,9 @@ mod cli;
 mod config;
 
 use anyhow::{Context, Result};
-use gout_proto::{ApiResponse, CreateTunnelRequest, TunnelResponse};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn main() -> Result<()> {
-    // 设置 tracing（默认只输出 error 级别）
     tracing_subscriber::fmt().init();
     cli::Cli::run()
 }
@@ -22,45 +21,14 @@ fn cmd_login(server: &str, key: &str) -> Result<()> {
 /// 处理 `tcp/udp/http` 命令
 fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
     let cfg = config::read()?;
-
+    let tt = gout_api::TunnelType::parse(tunnel_type);
     println!("🔗 创建 {tunnel_type} 隧道 {local_port} → {}", cfg.server.addr);
 
-    // 这里用 tokio runtime 来执行异步 REST 调用
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // 1. REST 创建隧道
-        let client = reqwest::Client::new();
-        let create_url = format!("http://{}/api/v1/tunnels", cfg.server.addr);
-
-        let resp = client
-            .post(&create_url)
-            .header("X-Api-Key", &cfg.server.api_key)
-            .json(&CreateTunnelRequest {
-                tunnel_type: match tunnel_type {
-                    "tcp" => gout_proto::TunnelType::Tcp,
-                    "udp" => gout_proto::TunnelType::Udp,
-                    "http" => gout_proto::TunnelType::Http,
-                    _ => unreachable!(),
-                },
-                local_port: Some(local_port),
-            })
-            .send()
-            .await
-            .context("REST create tunnel failed")?;
-
-        if !resp.status().is_success() {
-            let api_resp: ApiResponse<TunnelResponse> = resp
-                .json()
-                .await
-                .context("parse error response")?;
-            anyhow::bail!("server error: {}", api_resp.error.unwrap_or_default());
-        }
-
-        let api_resp: ApiResponse<TunnelResponse> = resp
-            .json()
-            .await
-            .context("parse success response")?;
-        let tunnel = api_resp.data.context("no tunnel data in response")?;
+        // 1. 用 GoutClient 创建隧道
+        let gout = gout_api::client::GoutClient::new(&cfg.server.addr, &cfg.server.api_key);
+        let tunnel = gout.create_tunnel(tt, local_port).await?;
 
         println!("✅ 隧道已创建");
         println!("   公网端口: {}  →  localhost:{}", tunnel.public_port, local_port);
@@ -73,17 +41,12 @@ fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
             .await
             .context("connect to data port failed")?;
 
-        // 握手：发送 [token: u64 BE][tunnel_type: u8]
-        let handshake = gout_proto::encode_handshake(tunnel.token, parse_tt(tunnel_type));
-        stream
-            .write_all(&handshake)
-            .await
-            .context("send handshake failed")?;
+        let handshake = gout_api::encode_handshake(tunnel.token, tt);
+        stream.write_all(&handshake).await.context("send handshake failed")?;
 
-        // 读响应
         let mut status = [0u8; 1];
         stream.read_exact(&mut status).await?;
-        if status[0] != gout_proto::STATUS_OK {
+        if status[0] != gout_api::STATUS_OK {
             anyhow::bail!("handshake rejected by server");
         }
 
@@ -92,11 +55,14 @@ fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
 
         // 3. 信号通道循环 + 数据转发
         if tunnel_type == "udp" {
-            run_udp_channel(stream, tunnel, local_port, cfg).await?;
+            run_udp_channel(stream, &gout, tunnel.token).await?;
         } else {
-            run_tcp_signal_channel(stream, tunnel, local_port, cfg).await?;
+            run_tcp_signal_channel(stream, &gout, tunnel.token, local_port).await?;
         }
 
+        // 4. 清理
+        gout.delete_tunnel(tunnel.token).await.ok();
+        println!("隧道已关闭");
         Ok(())
     })
 }
@@ -104,27 +70,22 @@ fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
 /// TCP 信号通道循环
 async fn run_tcp_signal_channel(
     mut stream: tokio::net::TcpStream,
-    tunnel: TunnelResponse,
+    gout: &gout_api::client::GoutClient,
+    token: u64,
     local_port: u16,
-    cfg: config::Config,
 ) -> Result<()> {
     let mut buf = [0u8; 1];
     loop {
         tokio::select! {
             r = stream.read(&mut buf) => {
                 match r {
-                    Ok(0) | Err(_) => {
-                        println!("信号通道已关闭");
-                        break;
-                    }
+                    Ok(0) | Err(_) => break,
                     Ok(_) => {
-                        if buf[0] == gout_proto::SIGNAL_NEW_CONN {
-                            tokio::spawn(handle_data_connection(
-                                tunnel.token,
-                                tunnel.tunnel_type.clone(),
-                                local_port,
-                                cfg.clone(),
-                            ));
+                        if buf[0] == gout_api::SIGNAL_NEW_CONN {
+                            let gout = gout_api::client::GoutClient::new(gout.server_addr(), gout.api_key());
+                            tokio::spawn(async move {
+                                handle_data_channel(gout, token, local_port).await;
+                            });
                         }
                     }
                 }
@@ -135,64 +96,44 @@ async fn run_tcp_signal_channel(
             }
         }
     }
-
-    // 清理
-    let client = reqwest::Client::new();
-    let del_url = format!("http://{}/api/v1/tunnels/{}", cfg.server.addr, tunnel.token);
-    let _ = client
-        .delete(&del_url)
-        .header("X-Api-Key", &cfg.server.api_key)
-        .send()
-        .await;
-
-    println!("隧道已关闭");
     Ok(())
 }
 
-/// 处理一条外部连接：连接数据通道 → 连接 localhost → pipe
-async fn handle_data_connection(
+/// 处理一条外部连接：数据通道 → localhost pipe
+async fn handle_data_channel(
+    gout: gout_api::client::GoutClient,
     token: u64,
-    tunnel_type: String,
     local_port: u16,
-    cfg: config::Config,
 ) {
-    // 从配置中解析 server_host 和数据端口
-    // 隧道创建时返回了 data_port，但我们没有保存。重新解析或使用默认
-    // 优先使用 config 中的 addr 和默认 data_port
-    let data_addr = format!("{}:8081", server_host(&cfg.server.addr));
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    let data_addr = format!("{}:8081", gout.server_addr());
     let mut stream = match tokio::net::TcpStream::connect(&data_addr).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("connect to data port failed: {}", e);
+            eprintln!("connect data port failed: {e}");
             return;
         }
     };
 
-    // 握手
-    let handshake = gout_proto::encode_handshake(token, parse_tt(&tunnel_type));
-    if stream.write_all(&handshake).await.is_err() {
-        return;
-    }
+    let handshake = gout_api::encode_handshake(token, gout_api::TunnelType::Tcp);
+    if stream.write_all(&handshake).await.is_err() { return; }
 
     let mut status = [0u8; 1];
-    if stream.read_exact(&mut status).await.is_err() || status[0] != gout_proto::STATUS_OK {
+    if stream.read_exact(&mut status).await.is_err() || status[0] != gout_api::STATUS_OK {
         eprintln!("data channel handshake rejected");
         return;
     }
 
-    // 连接 localhost
-    let mut local = match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await {
+    let mut local = match tokio::net::TcpStream::connect(format!("127.0.0.1:{local_port}")).await {
         Ok(s) => s,
         Err(_) => {
-            // 本地服务未启动，通知服务端
             let _ = stream.write_all(&[0u8; 1]).await;
-            eprintln!("连接 localhost:{} 失败 — 本地服务未启动？", local_port);
+            eprintln!("连接 localhost:{local_port} 失败 — 本地服务未启动？");
             return;
         }
     };
 
-    // pipe
     let (mut sr, mut sw) = stream.split();
     let (mut lr, mut lw) = local.split();
     tokio::select! {
@@ -204,18 +145,16 @@ async fn handle_data_connection(
 /// UDP 通道
 async fn run_udp_channel(
     mut stream: tokio::net::TcpStream,
-    _tunnel: TunnelResponse,
-    _local_port: u16,
-    _cfg: config::Config,
+    _gout: &gout_api::client::GoutClient,
+    _token: u64,
 ) -> Result<()> {
-    let mut buf = [0u8; gout_proto::UDP_FRAME_HEADER];
-    // 保持连接，等待关闭
+    let mut buf = [0u8; gout_api::UDP_FRAME_HEADER];
     loop {
         tokio::select! {
             r = stream.read_exact(&mut buf) => {
                 match r {
                     Ok(_) => {
-                        let len = gout_proto::decode_udp_header(&buf) as usize;
+                        let len = gout_api::decode_udp_header(&buf) as usize;
                         if len == 0 { break; }
                         let mut data = vec![0u8; len];
                         if stream.read_exact(&mut data).await.is_err() { break; }
@@ -223,22 +162,17 @@ async fn run_udp_channel(
                     Err(_) => break,
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                break;
-            }
+            _ = tokio::signal::ctrl_c() => break,
         }
     }
-    println!("UDP 隧道已关闭");
     Ok(())
 }
 
-/// 从 server addr 中提取 host（去掉端口部分）
+/// 从 server addr 中提取 host
 fn server_host(addr: &str) -> &str {
     addr.split(':').next().unwrap_or(addr)
 }
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-fn parse_tt(s: &str) -> gout_proto::TunnelType {
-    gout_proto::TunnelType::parse(s)
+fn parse_tt(s: &str) -> gout_api::TunnelType {
+    gout_api::TunnelType::parse(s)
 }

@@ -15,7 +15,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
 use config::ServerConfig;
-use gout_proto::{STATUS_ERR, STATUS_OK, UDP_FRAME_HEADER};
+use gout_api::{STATUS_ERR, STATUS_OK, UDP_FRAME_HEADER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -113,7 +113,7 @@ async fn handle_data_connection(
     // 1. 读握手帧: [token: u64 BE][tunnel_type: u8] = 9 bytes
     let mut handshake_buf = [0u8; 9];
     stream.read_exact(&mut handshake_buf).await?;
-    let (token, tunnel_type) = gout_proto::decode_handshake(&handshake_buf);
+    let (token, tunnel_type) = gout_api::decode_handshake(&handshake_buf);
 
     // 2. 验证隧道存在
     if !mgr.tunnel_exists(token).await {
@@ -122,10 +122,10 @@ async fn handle_data_connection(
     }
 
     match tunnel_type {
-        gout_proto::TunnelType::Tcp | gout_proto::TunnelType::Http => {
+        gout_api::TunnelType::Tcp | gout_api::TunnelType::Http => {
             handle_tcp_connection(stream, token, mgr).await
         }
-        gout_proto::TunnelType::Udp => {
+        gout_api::TunnelType::Udp => {
             handle_udp_connection(stream, token, mgr).await
         }
     }
@@ -153,7 +153,7 @@ async fn handle_tcp_connection(
                     msg = signal_rx.recv() => {
                         match msg {
                             Some(tunnel::SignalMsg::NewExternalConnection) => {
-                                if let Err(e) = writer.write_all(&[gout_proto::SIGNAL_NEW_CONN]).await {
+                                if let Err(e) = writer.write_all(&[gout_api::SIGNAL_NEW_CONN]).await {
                                     warn!("failed to notify client: {e}");
                                     break;
                                 }
@@ -215,7 +215,7 @@ async fn handle_udp_connection(
     loop {
         match stream.read_exact(&mut header_buf).await {
             Ok(_n) => {
-                let len = gout_proto::decode_udp_header(&header_buf) as usize;
+                let len = gout_api::decode_udp_header(&header_buf) as usize;
                 if len == 0 {
                     // 关闭信号
                     break;
