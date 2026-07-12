@@ -127,7 +127,7 @@ pub async fn keys_page(
         .into_iter()
         .filter(|k: &KeyEntry| !k.admin)
         .map(|k: KeyEntry| KeyViewModel {
-            key: mask_key(&k.key),
+            key: k.key.clone(),
             name: k.name,
         })
         .collect();
@@ -143,9 +143,4 @@ pub async fn keys_page(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-fn mask_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return key.to_string();
-    }
-    format!("{}...{}", &key[..6], &key[key.len() - 6..])
-}
+

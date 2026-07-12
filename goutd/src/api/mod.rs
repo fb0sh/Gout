@@ -159,7 +159,7 @@ async fn api_list_keys(
                 .into_iter()
                 .filter(|k| !k.admin)
                 .map(|k| KeyInfo {
-                    key: mask_key(&k.key),
+                    key: k.key.clone(),
                     name: k.name,
                 })
                 .collect();
@@ -203,9 +203,4 @@ async fn api_delete_key(
     }
 }
 
-fn mask_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return key.to_string();
-    }
-    format!("{}...{}", &key[..6], &key[key.len() - 6..])
-}
+
