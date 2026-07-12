@@ -6,3 +6,6 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+authors = ["fb0sh"]
+repository = "https://github.com/fb0sh/Gout"
+description = "A lightweight reverse proxy / tunnel tool. Expose local services to the public internet with one command."

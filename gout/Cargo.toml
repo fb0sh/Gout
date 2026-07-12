@@ -2,9 +2,17 @@
 name = "gout"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Gout CLI — expose local services to the public internet with one command."
+
+[[bin]]
+name = "gout"
+path = "src/main.rs"
 
 [dependencies]
-gout-api = { path = "../gout-api" }
+gout-api = { path = "../gout-api", version = "0.1.0" }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
@@ -13,6 +21,8 @@ serde_json = "1"
 toml = "0.8"
 dirs = "5"
 anyhow = "1"
-tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

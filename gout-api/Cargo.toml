@@ -2,6 +2,10 @@
 name = "gout-api"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Gout tunnel protocol types, REST API types, GoutClient, GoutAdminClient, and data channel handshake."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
