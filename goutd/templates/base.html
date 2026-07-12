@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Goutd{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+        nav { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 24px; display: flex; align-items: center; height: 48px; gap: 24px; }
+        nav a { color: #8b949e; text-decoration: none; font-size: 14px; padding: 4px 0; border-bottom: 2px solid transparent; }
+        nav a:hover, nav a.active { color: #f0f6fc; border-bottom-color: #58a6ff; }
+        nav .brand { color: #f0f6fc; font-weight: 600; font-size: 16px; margin-right: auto; }
+        main { max-width: 960px; margin: 32px auto; padding: 0 24px; }
+        h1 { font-size: 24px; font-weight: 600; margin-bottom: 24px; color: #f0f6fc; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #21262d; font-size: 14px; }
+        th { color: #8b949e; font-weight: 500; background: #161b22; position: sticky; top: 0; }
+        tr:hover { background: #161b22; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .badge-tcp { background: #1f6feb33; color: #58a6ff; }
+        .badge-udp { background: #8957e533; color: #bc8cff; }
+        .badge-active { background: #23863633; color: #3fb950; }
+        .badge-waiting { background: #9e6a0333; color: #d29922; }
+        .btn { display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid #30363d; background: #21262d; color: #c9d1d9; text-decoration: none; }
+        .btn:hover { background: #30363d; }
+        .btn-danger { color: #f85149; border-color: #f8514933; }
+        .btn-danger:hover { background: #f8514911; }
+        .btn-primary { background: #238636; border-color: #238636; color: #fff; }
+        .btn-primary:hover { background: #2ea043; }
+        .empty { text-align: center; padding: 48px 0; color: #8b949e; }
+        form { display: flex; gap: 8px; margin-bottom: 24px; align-items: center; }
+        input { padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; font-size: 14px; }
+        input:focus { outline: none; border-color: #58a6ff; }
+        code { background: #161b22; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+        .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">🔗 Goutd</span>
+        <a href="/dashboard" class="{% if active_page == "dashboard" %}active{% endif %}">隧道</a>
+        <a href="/keys" class="{% if active_page == "keys" %}active{% endif %}">Key 管理</a>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
