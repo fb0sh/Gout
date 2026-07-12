@@ -22,21 +22,264 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 ```
 
 项目是一个 Cargo workspace，包含三个 crate：
-- **gout-proto** — 共享协议类型、二进制编码、REST API 类型
+- **gout-api** — Rust SDK：协议类型、`GoutClient`（隧道操作）、`GoutAdminClient`（管理操作）、`data_channel`（握手/pipe）
 - **gout** — CLI 客户端：login/tcp/udp/http 子命令；读取 `~/.goutrc`
 - **goutd** — 服务端守护进程：axum HTTP 服务器 + tokio 数据通道 TCP 服务器
 
 ## 快速开始
 
-```bash
-# 服务端（公网 VPS）
-goutd
-# → Initial API key: sk-xxxxxxxxxxxx
-# → Web 面板: http://127.0.0.1:8080（通过 SSH 访问：ssh -L 8080:localhost:8080 server）
+### 服务端
 
-# 客户端
+```bash
+# 在公网 VPS 上运行
+goutd
+
+# 输出:
+# ──────────────────────────────────────────
+#   Initial admin key: sk-xxxxxxxxxxxx
+#   Save this key! It won't be shown again.
+# ──────────────────────────────────────────
+# HTTP server listening on http://127.0.0.1:8080
+# Data server listening on 0.0.0.0:8081
+```
+
+Web 面板默认只监听 `127.0.0.1`，通过 SSH 端口转发访问：
+
+```bash
+ssh -L 8080:localhost:8080 your-server
+# 浏览器打开 http://localhost:8080
+```
+
+### 客户端
+
+```bash
+# 通过 Web 面板创建普通 API key，然后：
 gout login server.example.com:8080 sk-xxxxxxxxxxxx
 gout tcp 4000     # 将本地 localhost:4000 暴露到公网
+```
+
+---
+
+## REST API 参考
+
+所有请求和响应均为 JSON 格式。
+
+### 认证
+
+两种 key 类型：
+
+| Header | 类型 | 用途 |
+|--------|------|------|
+| `X-Admin-Key` | admin | 管理 API key（增删查） |
+| `X-Api-Key` | tunnel | 创建/删除隧道 |
+
+> 首次启动时自动生成 admin key，打印到 stdout。
+> 通过 Web 面板或管理 API 创建普通 tunnel key。
+
+### 管理 API
+
+**创建 API key**
+
+```http
+POST /api/v1/keys
+X-Admin-Key: <admin-key>
+Content-Type: application/json
+
+{"name": "我的笔记本"}
+```
+
+```json
+{"success": true, "data": {"key": "sk-xxx...", "name": "我的笔记本"}}
+```
+
+**列出所有 key**
+
+```http
+GET /api/v1/keys
+X-Admin-Key: <admin-key>
+```
+
+```json
+{"success": true, "data": [{"key": "sk-xxx...", "name": "我的笔记本"}]}
+```
+
+**删除 key**
+
+```http
+DELETE /api/v1/keys/sk-xxx...
+X-Admin-Key: <admin-key>
+```
+
+```json
+{"success": true, "data": null}
+```
+
+### 隧道 API
+
+**创建隧道**
+
+```http
+POST /api/v1/tunnels
+X-Api-Key: <tunnel-key>
+Content-Type: application/json
+
+{"type": "tcp", "local_port": 4000}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "token": 15735302723313469543,
+    "public_port": 10000,
+    "data_port": 8081,
+    "tunnel_type": "tcp"
+  }
+}
+```
+
+创建后客户端需要连接数据端口（`data_port`）完成握手，详见"数据通道协议"。
+
+**删除隧道**
+
+```http
+DELETE /api/v1/tunnels/15735302723313469543
+X-Api-Key: <tunnel-key>
+```
+
+```json
+{"success": true, "data": null}
+```
+
+**隧道类型**
+
+| type | 说明 |
+|------|------|
+| `tcp` | TCP 隧道，每个外部连接一条独立数据通道 |
+| `udp` | UDP 隧道，一条持久数据通道承载数据报帧 |
+| `http` | v0.1 等价于 `tcp` |
+
+---
+
+## 数据通道协议
+
+创建隧道后的数据通道握手流程：
+
+```
+客户端                           服务端
+  │                                │
+  │── [token: u64 BE][type: u8] ──►│  握手（9 字节）
+  │◄──── [status: u8] ─────────────│  0x01=OK, 0x00=Error
+  │                                │
+  │  （TCP：信号通道循环）           │
+  │◄──── [0x02] ───────────────────│  新外部连接通知
+  │                                │
+  │  客户端另开连接：                │
+  │── [token][type] ──────────────►│  数据通道握手
+  │◄──── [0x01] ──────────────────│  OK
+  │══════ raw bytes ══════════════│  双向 pipe
+```
+
+UDP 隧道使用帧格式：
+
+```
+[len: u16 BE][data: len bytes]
+len = 0 表示关闭信号
+```
+
+---
+
+## Rust SDK (gout-api)
+
+`gout-api` 是 Rust crate，提供协议类型和客户端。
+
+### 添加依赖
+
+```toml
+[dependencies]
+gout-api = { git = "https://github.com/fb0sh/Gout" }
+```
+
+### GoutClient（隧道操作）
+
+```rust
+use gout_api::client::GoutClient;
+use gout_api::TunnelType;
+
+let gout = GoutClient::new("server.example.com:8080", "sk-xxxx...");
+
+// 创建隧道
+let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000).await?;
+println!("公网端口: {}", tunnel.public_port);
+
+// 连接数据端口（握手由 data_channel 模块处理）
+let mut stream = tokio::net::TcpStream::connect(
+    format!("server.example.com:{}", tunnel.data_port)
+).await?;
+
+gout_api::data_channel::client_handshake(
+    &mut stream, tunnel.token, TunnelType::Tcp
+).await?;
+
+// 连接本地服务
+let local = tokio::net::TcpStream::connect("127.0.0.1:4000").await?;
+
+// 双向 pipe
+gout_api::data_channel::pipe_bidirectional(stream, local).await;
+
+// 删除隧道
+gout.delete_tunnel(tunnel.token).await?;
+```
+
+### GoutAdminClient（管理操作）
+
+```rust
+use gout_api::admin::GoutAdminClient;
+
+let admin = GoutAdminClient::new("server.example.com:8080", "admin-key-xxx...");
+
+// 创建 tunnel key
+let key = admin.create_key("我的笔记本").await?;
+println!("新 key: {}", key.key);
+
+// 列出所有 key
+let keys = admin.list_keys().await?;
+for k in keys {
+    println!("{} ({})", k.name, k.key);
+}
+
+// 删除 key
+admin.delete_key("sk-xxx...").await?;
+```
+
+### 数据通道协议（底层）
+
+```rust
+use gout_api::data_channel;
+
+// 客户端握手
+data_channel::client_handshake(&mut stream, token, TunnelType::Tcp).await?;
+
+// 服务端接收握手
+let (token, tt) = data_channel::server_receive_handshake(&mut stream).await?;
+
+// 服务端确认/拒绝
+data_channel::server_accept(&mut stream).await?;
+data_channel::server_reject(&mut stream, "reason").await?;
+
+// 双向 pipe
+data_channel::pipe_bidirectional(a, b).await;
+```
+
+---
+
+## 开发
+
+```bash
+cargo build          # 编译全部
+cargo test           # 运行所有测试
+cargo run -p goutd   # 启动服务端
+cargo run -p gout    # CLI 客户端
 ```
 
 ## License
