@@ -1,29 +1,35 @@
 {% extends "base.html" %}
-{% block title %}Key 管理 — Goutd{% endblock %}
+{% block title %}Keys — goutd{% endblock %}
 {% block content %}
-<h1>API Key 管理</h1>
+<h1>API Keys</h1>
 
-<div class="admin-key-box">
-    <label>Admin API Key（用于 API 调用：X-Admin-Key header）</label>
-    <div class="key">{{ admin_key }}</div>
+<div class="sec">
+<h2>Admin Key</h2>
+<div class="box">
+    <label>Admin API Key — use as <code>X-Admin-Key</code> header for API calls</label>
+    <div class="val">{{ admin_key }}</div>
+</div>
 </div>
 
+<div class="sec">
+<h2>Tunnel Keys</h2>
+
 <form method="POST" action="/keys">
-    <input type="text" name="name" placeholder="备注名称，如"我的笔记本"" required style="flex:1">
-    <button type="submit" class="btn btn-primary">创建 Key</button>
+    <input type="text" name="name" placeholder="e.g. my laptop" required style="flex:1">
+    <button type="submit" class="btn btn-primary">Create Key</button>
 </form>
 
 {% if keys.is_empty() %}
 <div class="empty">
-    <p>暂无 API Key</p>
+    <p>No tunnel keys yet</p>
 </div>
 {% else %}
 <table>
     <thead>
         <tr>
             <th>Key</th>
-            <th>名称</th>
-            <th>操作</th>
+            <th>Name</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
@@ -32,8 +38,8 @@
             <td class="mono">{{ k.key }}</td>
             <td>{{ k.name }}</td>
             <td>
-                <form method="POST" action="/keys/delete/{{ k.key }}" style="display:inline;margin:0" onsubmit="return confirm('确定删除 key {{ k.name }}？')">
-                    <button type="submit" class="btn btn-danger">删除</button>
+                <form method="POST" action="/keys/delete/{{ k.key }}" style="display:inline;margin:0" onsubmit="return confirm('Delete {{ k.name }}?')">
+                    <button type="submit" class="btn btn-danger">Delete</button>
                 </form>
             </td>
         </tr>
@@ -41,4 +47,5 @@
     </tbody>
 </table>
 {% endif %}
+</div>
 {% endblock %}

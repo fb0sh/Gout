@@ -1,39 +1,39 @@
 {% extends "base.html" %}
-{% block title %}隧道 — Goutd{% endblock %}
+{% block title %}Tunnels — goutd{% endblock %}
 {% block content %}
-<h1>活跃隧道</h1>
+<h1>Active Tunnels</h1>
 
 {% if tunnels.is_empty() %}
 <div class="empty">
-    <p>暂无活跃隧道</p>
-    <p style="font-size:13px;margin-top:8px">使用 <code>gout login</code> 然后 <code>gout tcp &lt;port&gt;</code> 创建隧道</p>
+    <p>No active tunnels</p>
+    <p style="margin-top:8px">Use <code>gout login</code> then <code>gout tcp &lt;port&gt;</code> to create one.</p>
 </div>
 {% else %}
 <table>
     <thead>
         <tr>
             <th>Token</th>
-            <th>类型</th>
-            <th>公网端口</th>
-            <th>归属 Key</th>
-            <th>状态</th>
+            <th>Type</th>
+            <th>Public Port</th>
+            <th>Key</th>
+            <th>Status</th>
         </tr>
     </thead>
     <tbody>
         {% for t in tunnels %}
         <tr>
             <td class="mono">{{ t.token }}</td>
-            <td><span class="badge badge-{{ t.tunnel_type }}">{{ t.tunnel_type }}</span></td>
+            <td><span class="tag tag-{{ t.tunnel_type }}">{{ t.tunnel_type }}</span></td>
             <td class="mono">{{ t.public_port }}</td>
             <td>{{ t.key_name }}</td>
             <td>
                 {% if t.has_signal %}
-                <span class="badge badge-active">活跃</span>
+                <span class="tag tag-active">active</span>
                 {% if t.pending_count > 0 %}
-                <span style="font-size:12px;color:#8b949e;margin-left:4px">({{ t.pending_count }} 个待转发)</span>
+                <span style="font-size:12px;color:#8b949e;margin-left:4px">({{ t.pending_count }} pending)</span>
                 {% endif %}
                 {% else %}
-                <span class="badge badge-waiting">等待握手</span>
+                <span class="tag tag-waiting">waiting</span>
                 {% endif %}
             </td>
         </tr>

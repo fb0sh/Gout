@@ -3,33 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 — Goutd</title>
+    <title>Login — goutd</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 32px; width: 400px; }
-        h1 { font-size: 20px; font-weight: 600; margin-bottom: 24px; text-align: center; color: #f0f6fc; }
+        body { font-family: -apple-system, "SF Pro Text", "Noto Sans SC", sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .card { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 40px; width: 380px; }
+        h1 { font-size: 18px; font-weight: 600; text-align: center; margin-bottom: 28px; letter-spacing: -0.01em; color: #e6edf3; }
         label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
-        input { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; font-size: 14px; margin-bottom: 16px; }
-        input:focus { outline: none; border-color: #58a6ff; }
-        .btn { width: 100%; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; background: #238636; color: #fff; }
+        input { width: 100%; padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 14px; margin-bottom: 16px; line-height: 20px; outline: none; }
+        input:focus { border-color: #58a6ff; }
+        .btn { width: 100%; padding: 6px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; border: 1px solid #238636; background: #238636; color: #ffffff; line-height: 20px; }
         .btn:hover { background: #2ea043; }
-        .error { background: #f8514911; border: 1px solid #f8514933; border-radius: 6px; padding: 8px 12px; margin-bottom: 16px; color: #f85149; font-size: 13px; text-align: center; }
+        .error { border: 1px solid #f8514933; border-radius: 6px; padding: 8px 12px; margin-bottom: 16px; color: #f85149; font-size: 13px; text-align: center; background: #f8514911; }
         .hint { font-size: 12px; color: #484f58; text-align: center; margin-top: 16px; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🔗 Goutd 管理面板</h1>
+        <h1>goutd</h1>
         {% if error.is_some() %}
         <div class="error">{{ error.as_ref().unwrap() }}</div>
         {% endif %}
         <form method="POST" action="/login">
             <label>Admin API Key</label>
-            <input type="password" name="key" placeholder="输入 admin key" required autofocus>
-            <button type="submit" class="btn">登录</button>
+            <input type="password" name="key" placeholder="admin key" required autofocus>
+            <button type="submit" class="btn">Sign in</button>
         </form>
-        <div class="hint">首次启动时 admin key 打印在服务端 stdout</div>
+        <div class="hint">The admin key is printed to stdout on first startup.</div>
     </div>
 </body>
 </html>
