@@ -1,16 +1,35 @@
 //! # Gout API
 //!
-//! 共享协议类型 + 客户端 SDK。
+//! [Gout](https://github.com/fb0sh/Gout) 的 Rust SDK。
 //!
-//! - **协议类型**: TunnelType, 帧编解码, REST API 类型, token 生成
-//! - **GoutClient**: 使用普通 api-key 进行隧道操作
-//! - **GoutAdminClient**: 使用 admin key 进行管理操作
+//! 包含共享协议类型和两个客户端：
+//!
+//! | 模块 | 用途 | 认证 |
+//! |------|------|------|
+//! | [`client`] | 隧道操作（创建/列出/删除） | 普通 `api-key` |
+//! | [`admin`] | 管理操作（创建/列出/删除 API key） | `admin-api-key` |
+//! | [`data_channel`] | 数据通道握手和 TCP 转发（底层协议） | token 认证 |
+//!
+//! # 快速开始
+//!
+//! ```no_run
+//! # async fn doc() {
+//! use gout_api::client::GoutClient;
+//! use gout_api::admin::GoutAdminClient;
+//! use gout_api::TunnelType;
+//!
+//! let gout = GoutClient::new("server:8080", "sk-xxx");
+//! let tun = gout.create_tunnel(TunnelType::Tcp, 4000).await.unwrap();
+//! gout.delete_tunnel(tun.token).await.unwrap();
+//!
+//! let admin = GoutAdminClient::new("server:8080", "admin-key");
+//! let key = admin.create_key("my laptop").await.unwrap();
+//! # }
+//! ```
 
 pub mod admin;
 pub mod client;
 pub mod data_channel;
-
-// ━━━ 重新导出协议类型 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 mod proto;
 pub use proto::*;

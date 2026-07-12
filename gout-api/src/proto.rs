@@ -1,17 +1,24 @@
 //! Gout 共享协议类型 — 供 `gout` 和 `goutd` 共用。
+//!
+//! 包含隧道类型枚举、数据通道帧编解码、REST API 请求/响应类型、以及 token/API key 生成函数。
 
 use serde::{Deserialize, Serialize};
 
 // ━━━ 隧道类型 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 隧道传输协议类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelType {
+    /// TCP 隧道 — 每个外部连接使用一条独立数据通道
     Tcp = 0,
+    /// UDP 隧道 — 一条持久数据通道承载帧封装的数据报
     Udp = 1,
+    /// HTTP 隧道 — v0.1 等价于 TCP
     Http = 2,
 }
 
 impl TunnelType {
+    /// 返回协议类型的字符串标识（`"tcp"` / `"udp"` / `"http"`）。
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
@@ -20,6 +27,7 @@ impl TunnelType {
         }
     }
 
+    /// 从 u8 解析（用于二进制握手帧解码），返回 `None` 表示未知值。
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             0 => Some(Self::Tcp),
@@ -29,11 +37,12 @@ impl TunnelType {
         }
     }
 
+    /// 将类型编码为 u8（用于二进制握手帧编码）。
     pub fn to_u8(self) -> u8 {
         self as u8
     }
 
-    /// 从字符串解析（gout CLI 使用）
+    /// 从字符串解析（`"tcp"` / `"udp"` / `"http"`），未知值回退到 `Tcp`。
     pub fn parse(s: &str) -> Self {
         match s {
             "tcp" => Self::Tcp,
@@ -70,13 +79,24 @@ impl<'de> Deserialize<'de> for TunnelType {
 
 // ━━━ 数据通道协议 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 握手帧字节数：`[token: u64 BE]` + `[tunnel_type: u8]` = 9 字节。
 pub const HANDSHAKE_SIZE: usize = 9;
+
+/// 握手成功状态码。
 pub const STATUS_OK: u8 = 0x01;
+
+/// 握手失败状态码。
 pub const STATUS_ERR: u8 = 0x00;
+
+/// 信号通道通知字节：服务端→客户端，表示有新的外部连接。
 pub const SIGNAL_NEW_CONN: u8 = 0x02;
+
+/// UDP 帧头字节数：`[len: u16 BE]` = 2 字节。
 pub const UDP_FRAME_HEADER: usize = 2;
 
-/// 编码握手帧
+/// 编码客户端握手帧。
+///
+/// 输出 `[token: u64 BE][tunnel_type: u8]` 共 9 字节。
 pub fn encode_handshake(token: u64, tunnel_type: TunnelType) -> [u8; HANDSHAKE_SIZE] {
     let mut buf = [0u8; HANDSHAKE_SIZE];
     buf[..8].copy_from_slice(&token.to_be_bytes());
@@ -84,14 +104,14 @@ pub fn encode_handshake(token: u64, tunnel_type: TunnelType) -> [u8; HANDSHAKE_S
     buf
 }
 
-/// 解码握手帧，返回 (token, tunnel_type)
+/// 解码客户端握手帧，返回 `(token, tunnel_type)`。
 pub fn decode_handshake(buf: &[u8; HANDSHAKE_SIZE]) -> (u64, TunnelType) {
     let token = u64::from_be_bytes(buf[..8].try_into().unwrap());
     let tt = TunnelType::from_u8(buf[8]).unwrap_or(TunnelType::Tcp);
     (token, tt)
 }
 
-/// 编码 UDP 帧
+/// 编码 UDP 帧：`[len: u16 BE][data]`。
 pub fn encode_udp_frame(data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(2 + data.len());
     frame.extend_from_slice(&(data.len() as u16).to_be_bytes());
@@ -99,78 +119,109 @@ pub fn encode_udp_frame(data: &[u8]) -> Vec<u8> {
     frame
 }
 
-/// 隧道列表条目（GET /api/v1/tunnels 返回）
+/// 隧道列表条目，由 `GET /api/v1/tunnels` 返回。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelListEntry {
+    /// 隧道 token（序列化为字符串以避免 JavaScript 精度丢失）
     #[serde(with = "serde_u64_str")]
     pub token: u64,
+    /// 隧道类型字符串
     pub tunnel_type: String,
+    /// 公网端口
     pub public_port: u16,
+    /// 创建此隧道的 API key 名称
     pub key_name: String,
+    /// 是否已有客户端建立信号通道
     pub has_signal: bool,
+    /// 待转发的挂起连接数
     pub pending_count: usize,
 }
 
-/// 解码 UDP 帧头
+/// 解码 UDP 帧头，返回 payload 长度。
 pub fn decode_udp_header(buf: &[u8; UDP_FRAME_HEADER]) -> u16 {
     u16::from_be_bytes(*buf)
 }
 
 // ━━━ REST API 类型 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 通用 REST API 响应外壳。
+///
+/// 所有端点均返回此结构，`success` 表示操作是否成功。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse<T: Serialize> {
+    /// 操作是否成功
     pub success: bool,
+    /// 成功时携带的数据（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
+    /// 失败时的错误信息（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl<T: Serialize> ApiResponse<T> {
+    /// 构造成功响应。
     pub fn ok(data: T) -> Self {
         Self { success: true, data: Some(data), error: None }
     }
+    /// 构造失败响应。
     pub fn err(msg: impl Into<String>) -> Self {
         Self { success: false, data: None, error: Some(msg.into()) }
     }
 }
 
+/// 构造一个无数据的成功响应 `{"success": true, "data": null}`。
 pub fn api_ok() -> ApiResponse<()> {
     ApiResponse { success: true, data: Some(()), error: None }
 }
 
+/// 创建隧道请求体。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTunnelRequest {
+    /// 隧道协议类型（JSON key 为 `type`）
     #[serde(rename = "type")]
     pub tunnel_type: TunnelType,
+    /// 本地端口号（可选，供服务端记录）
     #[serde(default)]
     pub local_port: Option<u16>,
 }
 
+/// 创建隧道响应体。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelResponse {
+    /// 隧道 token（序列化为字符串以避免 JavaScript 精度丢失）
     #[serde(with = "serde_u64_str")]
     pub token: u64,
+    /// 服务端分配的公网端口
     pub public_port: u16,
+    /// 数据通道端口
     pub data_port: u16,
+    /// 隧道类型字符串
     pub tunnel_type: String,
 }
 
+/// 创建 API key 请求体。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateKeyRequest {
+    /// key 备注名称
     pub name: String,
 }
 
+/// 创建 API key 响应体。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateKeyResponse {
+    /// 新生成的 API key
     pub key: String,
+    /// 备注名称
     pub name: String,
 }
 
+/// API key 基本信息（列表展示时使用）。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KeyInfo {
+    /// API key 值
     pub key: String,
+    /// 备注名称
     pub name: String,
 }
 
@@ -178,10 +229,12 @@ pub struct KeyInfo {
 
 use rand::Rng;
 
+/// 生成一个随机的 64 位隧道 token。
 pub fn generate_token() -> u64 {
     rand::thread_rng().gen()
 }
 
+/// 生成一个随机的 API key，格式为 `sk-` + 24 位十六进制字符。
 pub fn generate_api_key() -> String {
     let id = uuid::Uuid::new_v4();
     format!("sk-{}", id.to_string().replace('-', "")[..24].to_string())
@@ -189,14 +242,22 @@ pub fn generate_api_key() -> String {
 
 // ━━━ 序列化辅助 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// 将 u64 序列化为 JSON 字符串，避免 JavaScript 精度丢失
+/// 将 `u64` 序列化为 JSON 字符串的 serde 辅助模块。
+///
+/// 使用方式：`#[serde(with = "serde_u64_str")]`
+///
+/// JavaScript 的 `Number` 类型只能精确表示 2^53 以内的整数，
+/// 而 Gout 的 token 是 64 位随机数，可能超出此范围。
+/// 将 token 序列化为字符串可避免 JSON 解析时的精度丢失。
 pub mod serde_u64_str {
     use serde::{Deserialize, Deserializer, Serializer};
 
+    /// 将 `u64` 序列化为 JSON 字符串。
     pub fn serialize<S: Serializer>(val: &u64, s: S) -> Result<S::Ok, S::Error> {
         s.collect_str(val)
     }
 
+    /// 从 JSON 字符串反序列化为 `u64`。
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
         let s = String::deserialize(d)?;
         s.parse().map_err(serde::de::Error::custom)
@@ -206,8 +267,6 @@ pub mod serde_u64_str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ━━━ TunnelType ━━━
 
     #[test]
     fn tunnel_type_from_u8_roundtrip() {
@@ -243,7 +302,6 @@ mod tests {
         assert_eq!(TunnelType::parse("tcp"), TunnelType::Tcp);
         assert_eq!(TunnelType::parse("udp"), TunnelType::Udp);
         assert_eq!(TunnelType::parse("http"), TunnelType::Http);
-        // 非法值回退到 Tcp
         assert_eq!(TunnelType::parse("bluetooth"), TunnelType::Tcp);
     }
 
@@ -260,8 +318,6 @@ mod tests {
         let r: Result<TunnelType, _> = serde_json::from_str("\"bluetooth\"");
         assert!(r.is_err());
     }
-
-    // ━━━ 数据通道协议 ━━━
 
     #[test]
     fn handshake_roundtrip() {
@@ -288,7 +344,6 @@ mod tests {
         let payload = b"hello UDP";
         let frame = encode_udp_frame(payload);
         assert_eq!(frame.len(), 2 + payload.len());
-
         let mut header = [0u8; UDP_FRAME_HEADER];
         header.copy_from_slice(&frame[..2]);
         let len = decode_udp_header(&header);
@@ -314,11 +369,8 @@ mod tests {
         assert_eq!(UDP_FRAME_HEADER, 2);
     }
 
-    // ━━━ Token / API key ━━━
-
     #[test]
     fn generate_token_is_nonzero() {
-        // 极不可能生成0
         for _ in 0..100 {
             let t = generate_token();
             if t == 0 {
@@ -331,13 +383,10 @@ mod tests {
     fn generate_api_key_format() {
         let key = generate_api_key();
         assert!(key.starts_with("sk-"));
-        assert_eq!(key.len(), 27); // "sk-" + 24 hex chars
-        // 应该只包含十六进制字符
+        assert_eq!(key.len(), 27);
         let hex_part = &key[3..];
         assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
-
-    // ━━━ REST API 类型 ━━━
 
     #[test]
     fn api_ok_response() {
@@ -364,8 +413,6 @@ mod tests {
         let j = serde_json::to_string(&req).unwrap();
         assert!(j.contains("\"type\":\"tcp\""));
         assert!(j.contains("\"local_port\":4000"));
-
-        // 反序列化
         let parsed: CreateTunnelRequest = serde_json::from_str(&j).unwrap();
         assert_eq!(parsed.tunnel_type, TunnelType::Tcp);
         assert_eq!(parsed.local_port, Some(4000));

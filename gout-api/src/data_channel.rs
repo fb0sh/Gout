@@ -1,14 +1,20 @@
 //! 数据通道协议 — 握手、确认、双向 pipe。
+//!
+//! 提供客户端和服务端两端的数据通道握手函数，
+//! 以及双向 TCP 数据转发（pipe）功能。
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{decode_handshake, encode_handshake, TunnelType, STATUS_OK};
 
-/// 握手错误
+/// 数据通道握手错误。
 #[derive(Debug)]
 pub enum HandshakeError {
+    /// I/O 错误（连接断开、超时等）
     Io(std::io::Error),
+    /// 服务端拒绝了握手（token 无效或隧道已关闭）
     Rejected,
+    /// token 不存在或隧道已关闭
     NotFound,
 }
 
@@ -28,7 +34,9 @@ impl From<std::io::Error> for HandshakeError {
     fn from(e: std::io::Error) -> Self { Self::Io(e) }
 }
 
-/// 客户端发起握手：发送 [token][tunnel_type]，等 1 字节状态码。
+/// 客户端发起握手：发送 `[token: u64 BE][tunnel_type: u8]` 并等待服务端确认。
+///
+/// 成功返回 `Ok(())`，失败返回 [`HandshakeError`]。
 pub async fn client_handshake(
     stream: &mut (impl AsyncWrite + AsyncRead + Unpin),
     token: u64,
@@ -45,7 +53,7 @@ pub async fn client_handshake(
     }
 }
 
-/// 服务端等待并解析握手，返回 (token, tunnel_type)。
+/// 服务端接收并解析客户端握手，返回 `(token, tunnel_type)`。
 pub async fn server_receive_handshake(
     stream: &mut (impl AsyncRead + Unpin),
 ) -> Result<(u64, TunnelType), HandshakeError> {
@@ -54,14 +62,14 @@ pub async fn server_receive_handshake(
     Ok(decode_handshake(&buf))
 }
 
-/// 服务端发送握手成功响应。
+/// 服务端发送握手成功响应（1 字节 `STATUS_OK`）。
 pub async fn server_accept(
     stream: &mut (impl AsyncWrite + Unpin),
 ) -> Result<(), std::io::Error> {
     stream.write_all(&[STATUS_OK]).await
 }
 
-/// 服务端发送握手拒绝响应 + 原因。
+/// 服务端发送握手拒绝响应：`[STATUS_ERR][err_len: u16 BE][reason]`。
 pub async fn server_reject(
     stream: &mut (impl AsyncWrite + Unpin),
     reason: &str,
@@ -74,6 +82,8 @@ pub async fn server_reject(
 }
 
 /// 双向 pipe 两个 TCP stream，任一方断开即结束。
+///
+/// 内部使用 `tokio::io::copy` 和 `tokio::select!` 实现双向转发。
 pub async fn pipe_bidirectional(
     mut a: tokio::net::TcpStream,
     mut b: tokio::net::TcpStream,

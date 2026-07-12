@@ -1,14 +1,28 @@
-//! GoutClient — 使用普通 api-key 与 goutd 通信。
+//! `GoutClient` — 使用普通 `api-key` 与 goutd 通信。
 //!
-//! 负责隧道 CRUD、数据通道握手（数据层 I/O 由调用方处理）。
+//! 负责隧道的 CRUD 操作（创建、列出、删除）。
+//! 数据通道的握手和转发由 [`data_channel`](crate::data_channel) 模块处理。
 
 use crate::{ApiResponse, CreateTunnelRequest, TunnelResponse};
 use anyhow::{Context, Result};
 
 /// 隧道操作客户端。
 ///
-/// 使用普通 `api-key`（非 admin key）。
-/// 数据通道的建立和维护由调用方自行处理。
+/// 使用服务端分配的普通 `api-key`（非 admin key）进行认证。
+/// 客户端实例持有 HTTP 连接池，建议复用。
+///
+/// # 示例
+///
+/// ```no_run
+/// # async fn doc() {
+/// use gout_api::client::GoutClient;
+/// use gout_api::TunnelType;
+///
+/// let gout = GoutClient::new("server.example.com:8080", "sk-your-key");
+/// let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000).await.unwrap();
+/// gout.delete_tunnel(tunnel.token).await.unwrap();
+/// # }
+/// ```
 pub struct GoutClient {
     inner: reqwest::Client,
     base: String,
@@ -16,10 +30,12 @@ pub struct GoutClient {
 }
 
 impl GoutClient {
-    /// 创建客户端。
+    /// 创建一个新的 `GoutClient`。
     ///
-    /// - `server_addr` — `host:port` 格式，如 `example.com:8080`
-    /// - `api_key` — 普通隧道 key
+    /// # 参数
+    ///
+    /// * `server_addr` — 服务端地址，`host:port` 格式，如 `"example.com:8080"`
+    /// * `api_key` — 普通隧道 API key
     pub fn new(server_addr: &str, api_key: &str) -> Self {
         Self {
             inner: reqwest::Client::new(),
@@ -28,9 +44,15 @@ impl GoutClient {
         }
     }
 
-    /// 创建隧道。
+    /// 创建一个新隧道。
     ///
-    /// 返回 `TunnelResponse`，调用方据此建立数据通道连接。
+    /// 返回 [`TunnelResponse`]，调用方据此建立数据通道连接。
+    /// 数据通道的握手和 pipe 由 [`data_channel`](crate::data_channel) 模块提供。
+    ///
+    /// # 参数
+    ///
+    /// * `tunnel_type` — 隧道协议类型（TCP / UDP / HTTP）
+    /// * `local_port` — 本地服务端口号
     pub async fn create_tunnel(
         &self,
         tunnel_type: crate::TunnelType,
@@ -64,6 +86,9 @@ impl GoutClient {
     }
 
     /// 列出所有活跃隧道。
+    ///
+    /// 返回当前服务端上状态为 "waiting" 或 "active" 的隧道列表。
+    /// 已关闭或已过期的隧道不会出现在列表中。
     pub async fn list_tunnels(&self) -> Result<Vec<crate::TunnelListEntry>> {
         let resp = self
             .inner
@@ -80,7 +105,9 @@ impl GoutClient {
         Ok(api_resp.data.unwrap_or_default())
     }
 
-    /// 删除隧道。
+    /// 删除指定 token 的隧道。
+    ///
+    /// 服务端会关闭对应的公网端口监听并清理所有相关资源。
     pub async fn delete_tunnel(&self, token: u64) -> Result<()> {
         let resp = self
             .inner
@@ -96,12 +123,12 @@ impl GoutClient {
         Ok(())
     }
 
-    /// 服务端地址（供调用方获取 data_port 或连接数据通道时使用）
+    /// 获取服务端地址（不含 `http://` 前缀）。
     pub fn server_addr(&self) -> &str {
-        &self.base[7..] // strip "http://"
+        &self.base[7..]
     }
 
-    /// api-key
+    /// 获取当前客户端使用的 API key。
     pub fn api_key(&self) -> &str {
         &self.api_key
     }
