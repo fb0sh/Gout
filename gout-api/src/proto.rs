@@ -138,6 +138,7 @@ pub struct CreateTunnelRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TunnelResponse {
+    #[serde(with = "serde_u64_str")]
     pub token: u64,
     pub public_port: u16,
     pub data_port: u16,
@@ -172,6 +173,22 @@ pub fn generate_token() -> u64 {
 pub fn generate_api_key() -> String {
     let id = uuid::Uuid::new_v4();
     format!("sk-{}", id.to_string().replace('-', "")[..24].to_string())
+}
+
+// ━━━ 序列化辅助 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 将 u64 序列化为 JSON 字符串，避免 JavaScript 精度丢失
+pub mod serde_u64_str {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(val)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 #[cfg(test)]
