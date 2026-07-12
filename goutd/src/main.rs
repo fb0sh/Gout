@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let init_key = store::ensure_initial_key(&store).await?;
     if !init_key.is_empty() {
         info!("──────────────────────────────────────────");
-        info!("  Initial API key: {}", init_key);
+        info!("  Admin API Key: {}", init_key);
         info!("  Save this key! It won't be shown again.");
         info!("──────────────────────────────────────────");
     }

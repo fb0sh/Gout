@@ -50,7 +50,8 @@ impl KeyStore {
         Ok(keys.keys)
     }
 
-    /// 添加一个 key 并持久化
+    /// 添加一个 key 并持久化。
+    /// 如果 `admin: true` 且已存在 admin key，则返回错误。
     pub async fn add(&self, entry: KeyEntry) -> Result<()> {
         let _lock = self.mu.lock().await;
         let mut keys = if self.path.exists() {
@@ -59,6 +60,12 @@ impl KeyStore {
         } else {
             KeysFile::default()
         };
+
+        // 只允许一个 admin key
+        if entry.admin && keys.keys.iter().any(|k| k.admin) {
+            anyhow::bail!("an admin key already exists");
+        }
+
         keys.keys.push(entry);
         self.write(&keys).await
     }
