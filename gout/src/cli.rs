@@ -68,6 +68,11 @@ pub enum Command {
         /// 本地端口号
         port: u16,
     },
+    /// 设置默认 server
+    Default {
+        /// server 名称
+        name: String,
+    },
     /// 显示已保存的 server 列表和状态
     Show,
 }
@@ -104,6 +109,7 @@ impl Cli {
             Command::Log { port, follow } => crate::cmd_log(port, follow),
             Command::Kill { port } => crate::cmd_kill(port),
             Command::List => crate::cmd_list(),
+            Command::Default { name } => crate::cmd_set_default(&name),
             Command::Show => crate::cmd_show(),
         }
     }

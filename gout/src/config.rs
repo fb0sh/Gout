@@ -165,6 +165,22 @@ pub fn resolve(name: Option<&str>) -> Result<ServerConfig> {
         .context(format!("server {key:?} not found"))
 }
 
+/// 设置默认 server
+pub fn set_default(name: &str) -> Result<()> {
+    let mut cfg = read().unwrap_or_else(|_| Config {
+        default_server: default_server_name(),
+        servers: HashMap::new(),
+    });
+    if !cfg.servers.contains_key(name) {
+        anyhow::bail!("server {name:?} not found");
+    }
+    cfg.default_server = name.to_string();
+    let content = toml::to_string_pretty(&cfg)?;
+    let new_path = gout_dir().join("config.toml");
+    std::fs::write(&new_path, &content).context("write config")?;
+    Ok(())
+}
+
 /// 列出所有 server 名及默认标记
 pub fn list_servers() -> Result<Vec<(String, ServerConfig, bool)>> {
     let cfg = read()?;
@@ -283,6 +299,27 @@ api_key = "sk-old"
             // 第一条是默认（b，先添加的）
             assert_eq!(list[0].0, "b");
             assert!(list[0].2); // is_default
+        });
+    }
+
+    #[test]
+    fn test_set_default_switches() {
+        with_temp_home(|_home| {
+            write("a", "a:1", "k").unwrap();
+            write("b", "b:2", "k").unwrap();
+            set_default("b").unwrap();
+            let list = list_servers().unwrap();
+            assert_eq!(list[0].0, "b", "should now be default");
+            assert!(list[0].2);
+        });
+    }
+
+    #[test]
+    fn test_set_default_nonexistent() {
+        with_temp_home(|_home| {
+            write("x", "x:1", "k").unwrap();
+            let err = set_default("y").unwrap_err();
+            assert!(err.to_string().contains("not found"));
         });
     }
 }

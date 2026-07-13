@@ -48,11 +48,12 @@ fn cmd_show() -> Result<()> {
     } else {
         println!("Servers:");
         for (name, sc, is_default) in &servers {
-            let def = if *is_default { " (default)" } else { "" };
+            let def = if *is_default { " ← default" } else { "" };
             println!("  {name}{def}");
-            println!("    addr:    {}", sc.addr);
-            println!("    api_key: …{}", &sc.api_key[sc.api_key.len().saturating_sub(8)..]);
+            println!("    addr:     {}", sc.addr);
+            println!("    api_key:  …{}", &sc.api_key[sc.api_key.len().saturating_sub(8)..]);
         }
+        println!("  (use `gout default <name>` to change)");
     }
 
     // 本地后台隧道
@@ -141,4 +142,10 @@ fn cmd_log(port: u16, follow: bool) -> Result<()> {
 
 fn cmd_kill(port: u16) -> Result<()> {
     daemon::DaemonManager::new().kill(port)
+}
+
+fn cmd_set_default(name: &str) -> Result<()> {
+    config::set_default(name)?;
+    println!("[+] default server set to {name:?}");
+    Ok(())
 }
