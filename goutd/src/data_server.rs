@@ -132,19 +132,63 @@ impl DataServer {
         gout_api::data_channel::server_accept(&mut stream).await?;
         info!("UDP data channel established for tunnel {}", token);
 
+        // 注册 dummy signal channel 标记活跃，防止清理循环误关
+        let _ = mgr.register_signal_channel(token).await;
+
+        let udp_socket = match mgr.get_udp_socket(token).await {
+            Some(s) => s,
+            None => {
+                warn!("UDP socket not found for tunnel {}", token);
+                return Ok(());
+            }
+        };
+
+        // tokio::io::split 消费 stream 返回独立 owned 半部，可 move 到不同任务
+        let (mut reader, mut writer) = tokio::io::split(stream);
+
+        // 记录外部 peer 地址（第一个数据报决定）
+        let peer = Arc::new(std::sync::Mutex::new(None::<std::net::SocketAddr>));
+        let peer2 = peer.clone();
+
+        // 子任务：UdpSocket → TCP 数据通道
+        // 克隆 Arc<UdpSocket> 以便主循环也能使用
+        let udp_tx = udp_socket.clone();
+        let send_handle = tokio::spawn(async move {
+            let mut buf = vec![0u8; 65535];
+            loop {
+                let (len, addr) = match udp_tx.recv_from(&mut buf).await {
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                *peer2.lock().unwrap() = Some(addr);
+                let frame = gout_api::encode_udp_frame(&buf[..len]);
+                if writer.write_all(&frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // 主循环：TCP 数据通道 → UdpSocket
         let mut header_buf = [0u8; UDP_FRAME_HEADER];
         loop {
-            match stream.read_exact(&mut header_buf).await {
-                Ok(_n) => {
+            match reader.read_exact(&mut header_buf).await {
+                Ok(_) => {
                     let len = gout_api::decode_udp_header(&header_buf) as usize;
                     if len == 0 { break; }
                     let mut payload = vec![0u8; len];
-                    stream.read_exact(&mut payload).await?;
+                    reader.read_exact(&mut payload).await?;
+                    // 如果已有 peer 地址则转发，否则丢弃（尚无外部数据来源）
+                    // 先复制出 peer 地址再 .await，避免 MutexGuard 跨越 await
+                    let peer_addr = *peer.lock().unwrap();
+                    if let Some(addr) = peer_addr {
+                        udp_socket.send_to(&payload, addr).await.ok();
+                    }
                 }
                 Err(_) => break,
             }
         }
 
+        send_handle.abort();
         mgr.close_tunnel(token).await.ok();
         info!("UDP tunnel {} closed", token);
         Ok(())

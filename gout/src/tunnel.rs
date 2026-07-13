@@ -1,10 +1,11 @@
 //! 隧道会话 — 管理一条隧道的完整生命周期。
 
+use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 
-use gout_api::TunnelType;
+use gout_api::{TunnelType, UDP_FRAME_HEADER};
 
 /// 隧道会话：REST 创建 → 握手 → 信号循环 → 数据转发 → 清理
 pub struct TunnelSession {
@@ -36,11 +37,19 @@ impl TunnelSession {
             tunnel_type,
         ).await.context("handshake failed")?;
 
-        println!("[+] signal channel established, waiting for connections...");
-        println!("    Ctrl+C to close tunnel");
-
-        // 进入信号循环
-        Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port).await?;
+        match tunnel_type {
+            TunnelType::Udp => {
+                println!("[+] UDP data channel established, forwarding...");
+                println!("    Ctrl+C to close tunnel");
+                Self::run_udp_data_loop(stream, local_port).await?;
+            }
+            _ => {
+                println!("[+] signal channel established, waiting for connections...");
+                println!("    Ctrl+C to close tunnel");
+                // 进入信号循环
+                Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port).await?;
+            }
+        }
 
         // 清理
         println!("[-] closing tunnel...");
@@ -84,6 +93,60 @@ impl TunnelSession {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// UDP 数据循环：双向转发（TCP 数据通道 ↔ localhost UDP）
+    async fn run_udp_data_loop(
+        stream: TcpStream,
+        local_port: u16,
+    ) -> Result<()> {
+        let local = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        local.connect(format!("127.0.0.1:{local_port}")).await?;
+
+        let (mut reader, mut writer) = tokio::io::split(stream);
+
+        // 子任务：TCP → local UDP
+        let local_tx = local.clone();
+        let recv_handle = tokio::spawn(async move {
+            let mut header_buf = [0u8; UDP_FRAME_HEADER];
+            loop {
+                match reader.read_exact(&mut header_buf).await {
+                    Ok(_) => {
+                        let len = gout_api::decode_udp_header(&header_buf) as usize;
+                        if len == 0 { break; }
+                        let mut payload = vec![0u8; len];
+                        if reader.read_exact(&mut payload).await.is_err() { break; }
+                        if local_tx.send(&payload).await.is_err() { break; }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // 主循环：local UDP → TCP
+        let mut recv_buf = vec![0u8; 65535];
+        loop {
+            tokio::select! {
+                r = local.recv(&mut recv_buf) => {
+                    match r {
+                        Ok(len) => {
+                            let frame = gout_api::encode_udp_frame(&recv_buf[..len]);
+                            if writer.write_all(&frame).await.is_err() { break; }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    println!("[-] closing tunnel...");
+                    break;
+                }
+            }
+        }
+
+        // 发送空帧通知服务端关闭
+        let _ = writer.write_all(&[0, 0]).await;
+        recv_handle.abort();
         Ok(())
     }
 

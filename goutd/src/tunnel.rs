@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
@@ -38,6 +38,8 @@ pub struct Tunnel {
     /// TCP 隧道：待转发的活跃外部连接 (conn_id → TcpStream)
     /// UDP 隧道：不使用此字段
     pub pending_conns: Vec<tokio::net::TcpStream>,
+    /// UDP 隧道：绑定的公网 UDP socket
+    pub udp_socket: Option<Arc<UdpSocket>>,
 }
 
 // ━━━ 管理器 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -97,12 +99,13 @@ impl TunnelManager {
             created_at: Instant::now(),
             signal_tx: None,
             pending_conns: Vec::new(),
+            udp_socket: None,
         };
 
         self.tunnels.write().await.insert(token, tunnel);
 
         // TCP/HTTP 隧道：启动公网端口监听
-        if tunnel_type != TunnelType::Udp {
+        if tunnel_type == TunnelType::Tcp || tunnel_type == TunnelType::Http {
             let mgr = self.clone();
             let addr = SocketAddr::new(bind_ip, port);
             tokio::spawn(async move {
@@ -110,6 +113,23 @@ impl TunnelManager {
                     warn!("public listener for tunnel {} ended: {}", token, e);
                 }
             });
+        }
+
+        // UDP 隧道：绑定公网 UDP socket
+        if tunnel_type == TunnelType::Udp {
+            let addr = SocketAddr::new(bind_ip, port);
+            match UdpSocket::bind(addr).await {
+                Ok(socket) => {
+                    let socket = Arc::new(socket);
+                    self.set_udp_socket(token, socket.clone()).await
+                        .map_err(|e| format!("store udp socket: {e}"))?;
+                    info!("UDP socket bound on {} for tunnel {}", addr, token);
+                }
+                Err(e) => {
+                    self.close_tunnel(token).await.ok();
+                    return Err(format!("bind UDP socket on {}: {e}", addr));
+                }
+            }
         }
 
         Ok((token, port))
@@ -218,6 +238,19 @@ impl TunnelManager {
             .map(|t| t.tunnel_type)
     }
 
+    /// 设置隧道 UDP socket
+    pub async fn set_udp_socket(&self, token: Token, socket: Arc<UdpSocket>) -> Result<(), String> {
+        let mut tunnels = self.tunnels.write().await;
+        let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
+        tunnel.udp_socket = Some(socket);
+        Ok(())
+    }
+
+    /// 获取隧道 UDP socket
+    pub async fn get_udp_socket(&self, token: Token) -> Option<Arc<UdpSocket>> {
+        self.tunnels.read().await.get(&token)?.udp_socket.clone()
+    }
+
     /// 检查隧道是否存在
     pub async fn tunnel_exists(&self, token: Token) -> bool {
         self.tunnels.read().await.contains_key(&token)
@@ -255,7 +288,13 @@ impl TunnelManager {
                 let mut to_close = Vec::new();
 
                 for (token, tunnel) in mgr.tunnels.read().await.iter() {
-                    if tunnel.signal_tx.is_none()
+                    let connected = match tunnel.tunnel_type {
+                        // UDP：有数据通道连接时 handle_udp 会注册 dummy signal_tx
+                        // 防止清理循环误关
+                        TunnelType::Udp => tunnel.signal_tx.is_some(),
+                        _ => tunnel.signal_tx.is_some(),
+                    };
+                    if !connected
                         && now.duration_since(tunnel.created_at) > timeout
                     {
                         to_close.push(*token);
