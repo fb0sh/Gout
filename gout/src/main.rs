@@ -40,7 +40,7 @@ fn cmd_server_show() -> Result<()> {
     for (name, sc, is_default) in &servers {
         let def = if *is_default { "  ← default" } else { "" };
         println!("  {name}{def}");
-        println!("         {}{}", sc.addr, if !is_default { "" } else { "" });
+        println!("         {}", sc.addr);
     }
     println!();
     println!("  `gout server default <name>` to change");

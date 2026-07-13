@@ -1,13 +1,14 @@
 //! 隧道管理器 — 服务端核心状态。
 //!
-//! 线程安全，通过 `Arc<TunnelManager>` 在 HTTP handler 和 data server 之间共享。
+//! 端口分配策略：PortAllocator 只负责生成候选端口，不判断端口是否空闲。
+//! 真正可用性由操作系统的 bind() 决定。AddrInUse 时自动换下一个端口。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
@@ -17,46 +18,98 @@ use gout_api::TunnelType;
 
 pub type Token = u64;
 
-/// 信号通道消息：data server 通过此 channel 通知 signal handler 有新外部连接
 #[derive(Debug, Clone)]
 pub enum SignalMsg {
     NewExternalConnection,
     Shutdown,
 }
 
-// ━━━ 纯同步端口池 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━ 端口分配器 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// 端口池 — 纯同步，可测试（无需 tokio runtime）。
+/// 端口分配器。
+///
+/// 只负责在配置范围内选择候选端口，不判断端口是否空闲。
+/// 真正可用性由调用的 bind() 决定。
 #[derive(Debug)]
-pub struct PortPool {
-    ports: Vec<u16>,
+pub struct PortAllocator {
+    start: u16,
+    end: u16,
+    cursor: u16,
+    /// 当前正在尝试绑定但尚未确认的端口
+    candidates: HashSet<u16>,
+    /// 已成功绑定并确认分配的端口
+    allocated: HashSet<u16>,
 }
 
-impl PortPool {
+impl PortAllocator {
     pub fn new(start: u16, end: u16) -> Self {
-        // 从高到低存放，pop 取最低可用端口
-        let ports: Vec<u16> = (start..=end).rev().collect();
-        Self { ports }
+        Self {
+            start,
+            end,
+            cursor: start,
+            candidates: HashSet::new(),
+            allocated: HashSet::new(),
+        }
     }
 
-    /// 分配一个端口。返回 None 表示已耗尽。
-    pub fn allocate(&mut self) -> Option<u16> {
-        self.ports.pop()
+    /// 获取下一个候选端口。返回 None 表示范围内无可用端口。
+    pub fn next_candidate(&mut self) -> Option<u16> {
+        let start = self.cursor;
+        loop {
+            if !self.candidates.contains(&self.cursor)
+                && !self.allocated.contains(&self.cursor)
+            {
+                let port = self.cursor;
+                self.advance_cursor();
+                self.candidates.insert(port);
+                return Some(port);
+            }
+            self.advance_cursor();
+            if self.cursor == start {
+                return None; // 绕了一圈，全占了
+            }
+        }
     }
 
-    /// 归还端口。
+    /// 标记候选端口为已确认（bind 成功）。
+    pub fn confirm(&mut self, port: u16) {
+        self.candidates.remove(&port);
+        self.allocated.insert(port);
+    }
+
+    /// 归还候选端口（bind 返回 AddrInUse，非本进程占用）。
+    pub fn reject(&mut self, port: u16) {
+        self.candidates.remove(&port);
+        // 不移入 allocated，也不放回 free pool——该端口已被外部进程占用
+    }
+
+    /// 释放已确认端口（tunnel 关闭）。
     pub fn release(&mut self, port: u16) {
-        self.ports.push(port);
+        self.candidates.remove(&port);
+        self.allocated.remove(&port);
+        // 下次 cursor 扫描能重新选中它
     }
 
-    /// 剩余端口数（用于测试）。
-    pub fn available(&self) -> usize {
-        self.ports.len()
+    /// 候选端口数（用于测试）
+    pub fn candidate_count(&self) -> usize {
+        self.candidates.len()
     }
 
-    /// 是否包含指定端口（用于测试）。
-    pub fn contains(&self, port: u16) -> bool {
-        self.ports.contains(&port)
+    /// 已确认端口数（用于测试）
+    pub fn allocated_count(&self) -> usize {
+        self.allocated.len()
+    }
+
+    /// 范围内总端口数
+    pub fn total(&self) -> u16 {
+        self.end - self.start + 1
+    }
+
+    fn advance_cursor(&mut self) {
+        self.cursor += 1;
+        if self.cursor > self.end {
+            self.cursor = self.start;
+        }
     }
 }
 
@@ -69,15 +122,9 @@ pub struct Tunnel {
     pub public_port: u16,
     pub key_name: String,
     pub created_at: Instant,
-    /// 客户端是否已连接数据通道
-    /// TCP：register_signal_channel 设 true；UDP：mark_connected 设 true
     pub connected: bool,
-    /// 信号通道发送端，data server accept 循环使用
     pub signal_tx: Option<tokio::sync::mpsc::Sender<SignalMsg>>,
-    /// TCP 隧道：待转发的活跃外部连接 (conn_id → TcpStream)
-    /// UDP 隧道：不使用此字段
-    pub pending_conns: Vec<tokio::net::TcpStream>,
-    /// UDP 隧道：绑定的公网 UDP socket
+    pub pending_conns: Vec<TcpStream>,
     pub udp_socket: Option<Arc<UdpSocket>>,
 }
 
@@ -85,11 +132,9 @@ pub struct Tunnel {
 
 pub struct TunnelManager {
     tunnels: RwLock<HashMap<Token, Tunnel>>,
-    port_pool: Mutex<PortPool>,
+    allocator: Mutex<PortAllocator>,
     data_port: u16,
-    /// 握手超时时间
     handshake_timeout: Duration,
-    /// 是否已启动清理循环
     cleanup_started: AtomicBool,
 }
 
@@ -97,36 +142,69 @@ impl TunnelManager {
     pub fn new(port_start: u16, port_end: u16, data_port: u16) -> Self {
         Self {
             tunnels: RwLock::new(HashMap::new()),
-            port_pool: Mutex::new(PortPool::new(port_start, port_end)),
+            allocator: Mutex::new(PortAllocator::new(port_start, port_end)),
             data_port,
             handshake_timeout: Duration::from_secs(30),
             cleanup_started: AtomicBool::new(false),
         }
     }
 
-    /// 分配一个公网端口。返回 None 表示端口池已耗尽。
-    pub async fn allocate_port(&self) -> Option<u16> {
-        self.port_pool.lock().await.allocate()
-    }
-
-    /// 归还端口
-    pub async fn release_port(&self, port: u16) {
-        self.port_pool.lock().await.release(port);
-    }
-
     pub fn data_port(&self) -> u16 {
         self.data_port
     }
 
-    /// 创建隧道并启动公网端口监听。返回 token。
+    /// 创建隧道。循环尝试候选端口直到 bind 成功或耗尽。
     pub async fn create_tunnel(
         self: &Arc<Self>,
         tunnel_type: TunnelType,
         key_name: String,
         bind_ip: std::net::IpAddr,
     ) -> Result<(Token, u16), String> {
-        let port = self.allocate_port().await.ok_or("no free ports")?;
+        match tunnel_type {
+            TunnelType::Tcp | TunnelType::Http => {
+                self.create_tcp_tunnel(tunnel_type, key_name, bind_ip).await
+            }
+            TunnelType::Udp => {
+                self.create_udp_tunnel(key_name, bind_ip).await
+            }
+        }
+    }
+
+    /// TCP/HTTP 隧道：bind 循环 → spawn listener
+    async fn create_tcp_tunnel(
+        self: &Arc<Self>,
+        tunnel_type: TunnelType,
+        key_name: String,
+        bind_ip: std::net::IpAddr,
+    ) -> Result<(Token, u16), String> {
         let token = gout_api::generate_token();
+
+        // bind 循环：尝试候选端口，AddrInUse 则换下一个
+        let (listener, port) = loop {
+            let port = {
+                let mut alloc = self.allocator.lock().await;
+                let port = alloc.next_candidate().ok_or("no free ports")?;
+                port
+            };
+
+            let addr = SocketAddr::new(bind_ip, port);
+            match TcpListener::bind(addr).await {
+                Ok(l) => {
+                    // bind 成功，确认分配
+                    self.allocator.lock().await.confirm(port);
+                    break (l, port);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    // 端口已被占用，放弃该候选
+                    self.allocator.lock().await.reject(port);
+                    continue;
+                }
+                Err(e) => {
+                    self.allocator.lock().await.reject(port);
+                    return Err(format!("bind TCP on {bind_ip}: {e}"));
+                }
+            }
+        };
 
         let tunnel = Tunnel {
             token,
@@ -142,41 +220,81 @@ impl TunnelManager {
 
         self.tunnels.write().await.insert(token, tunnel);
 
-        // TCP/HTTP 隧道：启动公网端口监听
-        if tunnel_type == TunnelType::Tcp || tunnel_type == TunnelType::Http {
-            let mgr = self.clone();
-            let addr = SocketAddr::new(bind_ip, port);
-            tokio::spawn(async move {
-                if let Err(e) = mgr.run_public_listener(token, addr).await {
-                    warn!("public listener for tunnel {} ended: {}", token, e);
-                }
-            });
-        }
-
-        // UDP 隧道：绑定公网 UDP socket
-        if tunnel_type == TunnelType::Udp {
-            let addr = SocketAddr::new(bind_ip, port);
-            match UdpSocket::bind(addr).await {
-                Ok(socket) => {
-                    let socket = Arc::new(socket);
-                    self.set_udp_socket(token, socket.clone()).await
-                        .map_err(|e| format!("store udp socket: {e}"))?;
-                    info!("UDP socket bound on {} for tunnel {}", addr, token);
-                }
-                Err(e) => {
-                    self.close_tunnel(token).await.ok();
-                    return Err(format!("bind UDP socket on {}: {e}", addr));
-                }
+        // 启动 accept 循环（传入已绑定的 listener，避免二次 bind）
+        let mgr = self.clone();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Err(e) = mgr.run_public_listener(token, listener).await {
+                warn!("public listener for tunnel {} ended: {}", token, e);
             }
-        }
+        });
+        info!("TCP listener started on {} for tunnel {}", addr, token);
 
         Ok((token, port))
     }
 
-    /// 公网端口 accept 循环
-    async fn run_public_listener(&self, token: Token, addr: SocketAddr) -> Result<(), String> {
-        let listener = TcpListener::bind(addr).await.map_err(|e| e.to_string())?;
-        info!("public listener started on {} for tunnel {}", addr, token);
+    /// UDP 隧道：bind 循环 → 存储 socket
+    async fn create_udp_tunnel(
+        self: &Arc<Self>,
+        key_name: String,
+        bind_ip: std::net::IpAddr,
+    ) -> Result<(Token, u16), String> {
+        let token = gout_api::generate_token();
+
+        let (socket, port) = loop {
+            let port = {
+                let mut alloc = self.allocator.lock().await;
+                let port = alloc.next_candidate().ok_or("no free ports")?;
+                port
+            };
+
+            let addr = SocketAddr::new(bind_ip, port);
+            match UdpSocket::bind(addr).await {
+                Ok(s) => {
+                    self.allocator.lock().await.confirm(port);
+                    break (Arc::new(s), port);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    self.allocator.lock().await.reject(port);
+                    continue;
+                }
+                Err(e) => {
+                    self.allocator.lock().await.reject(port);
+                    return Err(format!("bind UDP on {bind_ip}: {e}"));
+                }
+            }
+        };
+
+        let tunnel = Tunnel {
+            token,
+            tunnel_type: TunnelType::Udp,
+            public_port: port,
+            key_name,
+            created_at: Instant::now(),
+            connected: false,
+            signal_tx: None,
+            pending_conns: Vec::new(),
+            udp_socket: None,
+        };
+
+        self.tunnels.write().await.insert(token, tunnel);
+
+        // 存储 UDP socket 供 handle_udp 使用
+        self.set_udp_socket(token, socket.clone()).await
+            .map_err(|e| format!("store udp socket: {e}"))?;
+        info!("UDP socket bound on {}:{} for tunnel {}", bind_ip, port, token);
+
+        Ok((token, port))
+    }
+
+    /// 公网端口 accept 循环（接收预绑定的 listener）
+    async fn run_public_listener(
+        &self,
+        token: Token,
+        listener: TcpListener,
+    ) -> Result<(), String> {
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        info!("public listener running on {} for tunnel {}", addr, token);
 
         loop {
             let (stream, _peer) = match listener.accept().await {
@@ -192,8 +310,8 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 注册信号通道。仅 TCP 隧道首次数据连接时调用。
-    /// 返回 SignalMsg receiver — data server spawn 一个 signal handler 使用它。
+    // ─── 信号通道 ─────────────────────────────────────────────
+
     pub async fn register_signal_channel(
         &self,
         token: Token,
@@ -211,24 +329,22 @@ impl TunnelManager {
         Ok(rx)
     }
 
-    /// 添加一个待转发的外部连接（TCP 隧道）。
-    /// 同时通过信号通道通知客户端。
+    // ─── 外部连接管理 ─────────────────────────────────────────
+
     pub async fn add_pending_conn(
         &self,
         token: Token,
-        stream: tokio::net::TcpStream,
+        stream: TcpStream,
     ) -> Result<(), String> {
         let tunnels = self.tunnels.read().await;
         let tunnel = tunnels.get(&token).ok_or("tunnel not found")?;
 
-        // 通过信号通道通知客户端
         if let Some(ref tx) = tunnel.signal_tx {
             tx.send(SignalMsg::NewExternalConnection)
                 .await
                 .map_err(|_| "signal channel closed".to_string())?;
         }
 
-        // 需要 write lock 来 push pending_conns
         drop(tunnels);
         let mut tunnels = self.tunnels.write().await;
         let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
@@ -237,11 +353,10 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 取出一个待转发的外部连接，供客户端数据通道 pipe。
     pub async fn take_pending_conn(
         &self,
         token: Token,
-    ) -> Result<tokio::net::TcpStream, String> {
+    ) -> Result<TcpStream, String> {
         let mut tunnels = self.tunnels.write().await;
         let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
 
@@ -249,7 +364,6 @@ impl TunnelManager {
             return Err("no pending connection".into());
         }
 
-        // FIFO：取最早的连接
         Ok(tunnel.pending_conns.remove(0))
     }
 
@@ -258,9 +372,9 @@ impl TunnelManager {
         let mut tunnels = self.tunnels.write().await;
         let tunnel = tunnels.remove(&token).ok_or("tunnel not found")?;
 
-        self.release_port(tunnel.public_port).await;
+        // 归还端口到分配器
+        self.allocator.lock().await.release(tunnel.public_port);
 
-        // 通知信号通道关闭
         if let Some(tx) = tunnel.signal_tx {
             let _ = tx.send(SignalMsg::Shutdown).await;
         }
@@ -268,12 +382,12 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 查询隧道是否已建立数据通道连接
+    // ─── 查询 ─────────────────────────────────────────────────
+
     pub async fn is_connected(&self, token: Token) -> Option<bool> {
         self.tunnels.read().await.get(&token).map(|t| t.connected)
     }
 
-    /// 标记隧道为已连接（UDP 数据通道建立时调用）。
     pub async fn mark_connected(&self, token: Token) -> Result<(), String> {
         let mut tunnels = self.tunnels.write().await;
         let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
@@ -281,7 +395,6 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 设置隧道 UDP socket
     pub async fn set_udp_socket(&self, token: Token, socket: Arc<UdpSocket>) -> Result<(), String> {
         let mut tunnels = self.tunnels.write().await;
         let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
@@ -289,17 +402,14 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 获取隧道 UDP socket
     pub async fn get_udp_socket(&self, token: Token) -> Option<Arc<UdpSocket>> {
         self.tunnels.read().await.get(&token)?.udp_socket.clone()
     }
 
-    /// 检查隧道是否存在
     pub async fn tunnel_exists(&self, token: Token) -> bool {
         self.tunnels.read().await.contains_key(&token)
     }
 
-    /// 获取所有活跃隧道信息，供 Web 面板展示
     pub async fn list_tunnels(&self) -> Vec<TunnelInfo> {
         self.tunnels
             .read()
@@ -316,7 +426,8 @@ impl TunnelManager {
             .collect()
     }
 
-    /// 启动后台清理循环，定期关闭过期隧道
+    // ─── 清理循环 ─────────────────────────────────────────────
+
     pub fn start_cleanup_loop(self: &Arc<Self>) {
         if self.cleanup_started.swap(true, Ordering::Relaxed) {
             return;
@@ -380,10 +491,97 @@ mod tests {
         Arc::new(TunnelManager::new(20000, 20010, 8081))
     }
 
+    // ━━━ PortAllocator 纯同步测试 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn allocator_returns_sequential_ports() {
+        let mut a = PortAllocator::new(100, 102);
+        assert_eq!(a.next_candidate(), Some(100));
+        assert_eq!(a.next_candidate(), Some(101));
+        assert_eq!(a.next_candidate(), Some(102));
+        assert_eq!(a.next_candidate(), None);
+    }
+
+    #[test]
+    fn allocator_confirm_removes_from_candidate() {
+        let mut a = PortAllocator::new(100, 100);
+        let p = a.next_candidate().unwrap();
+        assert_eq!(a.candidate_count(), 1);
+        a.confirm(p);
+        assert_eq!(a.candidate_count(), 0);
+        assert_eq!(a.allocated_count(), 1);
+        // 已确认的端口不再分配
+        assert_eq!(a.next_candidate(), None);
+    }
+
+    #[test]
+    fn allocator_reject_frees_port_for_retry() {
+        let mut a = PortAllocator::new(100, 100);
+        let p = a.next_candidate().unwrap(); // 100
+        a.reject(p);
+        // reject 移出 candidates，端口重新可用
+        assert_eq!(a.next_candidate(), Some(100));
+    }
+
+    #[test]
+    fn allocator_confirm_then_release() {
+        let mut a = PortAllocator::new(100, 101);
+        let a1 = a.next_candidate().unwrap(); // 100
+        let a2 = a.next_candidate().unwrap(); // 101
+        a.confirm(a1);
+        a.confirm(a2);
+        assert_eq!(a.next_candidate(), None);
+        a.release(a1);
+        // 释放后应能再次分配
+        assert_eq!(a.next_candidate(), Some(100));
+    }
+
+    #[test]
+    fn allocator_exhaustion() {
+        let mut a = PortAllocator::new(100, 100); // 1 port
+        let p = a.next_candidate().unwrap();
+        a.confirm(p);
+        assert_eq!(a.next_candidate(), None);
+    }
+
+    #[test]
+    fn allocator_skips_allocated_ports_in_scan() {
+        let mut a = PortAllocator::new(100, 103);
+        let p1 = a.next_candidate().unwrap(); // 100
+        a.confirm(p1);
+        // cursor 在 101，扫描应跳过 100
+        assert_eq!(a.next_candidate(), Some(101));
+        a.confirm(101);
+        assert_eq!(a.next_candidate(), Some(102));
+        a.confirm(102);
+        assert_eq!(a.next_candidate(), Some(103));
+        a.confirm(103);
+        assert_eq!(a.next_candidate(), None);
+    }
+
+    #[test]
+    fn allocator_wraps_around() {
+        let mut a = PortAllocator::new(100, 102);
+        assert_eq!(a.next_candidate(), Some(100));
+        assert_eq!(a.next_candidate(), Some(101));
+        assert_eq!(a.next_candidate(), Some(102));
+        assert_eq!(a.next_candidate(), None);
+        a.release(100);
+        // 释放后 cursor 已回到 100
+        assert_eq!(a.next_candidate(), Some(100));
+    }
+
+    #[test]
+    fn allocator_total() {
+        let a = PortAllocator::new(100, 199);
+        assert_eq!(a.total(), 100);
+    }
+
+    // ━━━ TunnelManager 集成测试 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     #[tokio::test]
     async fn test_create_tunnel_allocates_port() {
         let mgr = make_mgr();
-        let free_before = mgr.port_pool.lock().await.available();
         let (token, port) = mgr
             .create_tunnel(TunnelType::Tcp, "test".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
@@ -391,19 +589,19 @@ mod tests {
         assert!(token != 0);
         assert!(port >= 20000 && port <= 20010);
 
-        let free_after = mgr.port_pool.lock().await.available();
-        assert_eq!(free_after, free_before - 1);
+        // 端口已确认分配
+        let alloc = mgr.allocator.lock().await;
+        assert_eq!(alloc.allocated_count(), 1);
+        assert!(alloc.allocated.contains(&port));
     }
 
     #[tokio::test]
     async fn test_create_tunnel_port_exhaustion() {
-        let mgr = Arc::new(TunnelManager::new(30000, 30000, 8081)); // only 1 port
-        // 用光所有端口
+        let mgr = Arc::new(TunnelManager::new(30000, 30000, 8081));
         let (_, _) = mgr
             .create_tunnel(TunnelType::Tcp, "a".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
             .unwrap();
-        // 下一个应该失败
         let r = mgr
             .create_tunnel(TunnelType::Tcp, "b".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await;
@@ -418,11 +616,9 @@ mod tests {
             .await
             .unwrap();
 
-        // 第一次注册应成功
         let rx = mgr.register_signal_channel(token).await;
         assert!(rx.is_ok());
 
-        // 第二次注册应失败
         let rx2 = mgr.register_signal_channel(token).await;
         assert!(rx2.is_err());
     }
@@ -430,17 +626,16 @@ mod tests {
     #[tokio::test]
     async fn test_close_tunnel_frees_port() {
         let mgr = make_mgr();
-        let free_before = mgr.port_pool.lock().await.available();
-        let (token, port) = mgr
+        let (token, _port) = mgr
             .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
             .unwrap();
 
         mgr.close_tunnel(token).await.unwrap();
 
-        let free_after = mgr.port_pool.lock().await.available();
-        assert_eq!(free_after, free_before);
-        assert!(mgr.port_pool.lock().await.contains(port));
+        // 端口已释放，应可再次分配
+        let alloc = mgr.allocator.lock().await;
+        assert_eq!(alloc.allocated_count(), 0);
     }
 
     #[tokio::test]
@@ -450,8 +645,6 @@ mod tests {
             .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
             .unwrap();
-        // 未注册 signal channel 时添加 pending conn 应失败
-        // 没有 signal channel 和 pending conn 时 take 应失败
         let r = mgr.take_pending_conn(token).await;
         assert!(r.is_err());
     }
@@ -471,46 +664,5 @@ mod tests {
         assert_eq!(list[0].token, token);
         assert_eq!(list[0].key_name, "my key");
         assert!(!list[0].connected);
-    }
-
-    // ━━━ 纯同步 PortPool 测试（无需 tokio runtime） ━━━━━━━━━━━
-
-    #[test]
-    fn port_pool_allocates_in_range() {
-        let mut pool = PortPool::new(20000, 20005);
-        assert_eq!(pool.available(), 6);
-        let port = pool.allocate().unwrap();
-        assert!(port >= 20000 && port <= 20005);
-    }
-
-    #[test]
-    fn port_pool_exhaustion() {
-        let mut pool = PortPool::new(30000, 30000); // only 1 port
-        assert!(pool.allocate().is_some());
-        assert!(pool.allocate().is_none());
-    }
-
-    #[test]
-    fn port_pool_release_returns_port() {
-        let mut pool = PortPool::new(40000, 40000);
-        let p = pool.allocate().unwrap();
-        assert_eq!(pool.available(), 0);
-        pool.release(p);
-        assert_eq!(pool.available(), 1);
-        assert!(pool.contains(p));
-    }
-
-    #[test]
-    fn port_pool_release_orders_do_not_matter() {
-        let mut pool = PortPool::new(100, 101);
-        let a = pool.allocate().unwrap();
-        let b = pool.allocate().unwrap();
-        pool.release(a);
-        pool.release(b);
-        assert_eq!(pool.available(), 2);
-        // 应该能再次分配到之前释放的端口
-        let _c = pool.allocate().unwrap();
-        let _d = pool.allocate().unwrap();
-        assert_eq!(pool.available(), 0);
     }
 }
