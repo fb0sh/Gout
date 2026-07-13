@@ -9,7 +9,8 @@
 
 ## 特点
 
-- **零配置客户端**：`gout login server:8080 key` → `gout tcp 4000`，无需手写配置文件
+- **零配置客户端**：`gout login <name> <addr> <key>` → `gout tcp 4000`，无需手写配置文件
+- **多 Server 支持**：`gout login prod <addr> <key>`，`gout tcp 4444 -s prod`，`gout default <name>` 切换默认
 - **Web 管理面板**：在浏览器中管理 API key、查看活跃隧道、添加备注
 - **REST 控制面**：隧道通过 HTTP API 创建和销毁，不依赖配置文件热加载
 - **多协议支持**：TCP、UDP 和 HTTP（HTTP 当前等价于 TCP）
@@ -32,7 +33,7 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 
 项目是一个 Cargo workspace，包含三个 crate：
 - **gout-api** — Rust SDK：协议类型、`GoutClient`（隧道操作）、`GoutAdminClient`（管理操作）、`data_channel`（握手/pipe）
-- **gout** — CLI 客户端：login/tcp/udp/http 子命令 + 后台管理（list/kill/log）；配置存储在 `~/.gout/config.toml`
+- **gout** — CLI 客户端：login/tcp/udp/http 子命令 + 后台管理（list/kill/log/show/default）；配置存储在 `~/.gout/config.toml`
 - **goutd** — 服务端守护进程：axum HTTP 服务器 + tokio 数据通道 TCP 服务器
 
 ## 安装
@@ -96,63 +97,82 @@ ssh -L 8080:localhost:8080 your-server
 ### 客户端
 
 ```bash
-# 通过 Web 面板创建普通 API key，然后：
-gout login server.example.com:8080 sk-xxxxxxxxxxxx
+# 登录 server（支持多 server）
+gout login prod prod.example.com:8080 sk-xxxxxxxxxxxx
 
-# 前台运行（Ctrl+C 关闭）
+# 前台运行
 gout tcp 4000
 [+] tcp tunnel: 127.0.0.1:4000 -> 127.0.0.1:10001
 [+] signal channel established, waiting for connections...
     Ctrl+C to close tunnel
-```
 
-后台运行：
-
-```bash
+# 后台运行
 gout tcp 8080 -d
-[+] tcp tunnel: 127.0.0.1:8080 -> 127.0.0.1:10002
+[+] tcp tunnel: http://127.0.0.1:8080 -> http://prod.example.com:10002
 [+] tunnel started in background (PID: 87654)
     `gout list` to check status
     `gout log 8080` to view logs
     `gout kill 8080` to stop
-```
 
-管理后台隧道：
+# 按 server 选择
+gout tcp 8080 -s dev         # 用 dev server
+gout tcp 8080 -s prod        # 用 prod server
 
-```bash
+# 管理后台隧道
 gout list
- PORT  REMOTE                      TYPE     PID    STATUS
- 8080  127.0.0.1:10002             tcp    87654     alive
+prod (prod.example.com:8080)
+  PORT  REMOTE                         TYPE     PID    STATUS
+  8080  prod.example.com:10002         tcp    87654     alive
+
+dev (dev.example.com:8080)
+  (no active tunnels)
 
 gout log 8080          # 查看日志
 gout log 8080 -f       # 实时跟踪（Unix）
 
 gout kill 8080
 [+] tunnel on port 8080 (PID 87654) stopped
-```
 
-UDP / HTTP 隧道：
+# 查看所有 server + 隧道
+gout show
+prod (prod.example.com:8080)
+  PORT  REMOTE                         TYPE     PID    STATUS
+  8080  prod.example.com:10002         tcp    87654     alive
 
-```bash
+dev (dev.example.com:8080)
+  (no active tunnels)
+
+(use `gout default <name>` to change default)
+
+# 设置默认 server
+gout default dev
+# 之后不加 -s 时走 dev
+
 gout udp 53            # UDP 隧道（DNS 等）
 gout http 8080         # HTTP 隧道，显示 http:// URL
 ```
 
 ## 配置文件
 
-客户端凭据存储在 `~/.gout/config.toml`（旧 `~/.goutrc` 自动迁移）：
+多 server 配置存储在 `~/.gout/config.toml`（旧 `~/.goutrc` 自动迁移）：
 
 ```toml
-[server]
-addr = "server.example.com:8080"
+default_server = "prod"
+
+[servers.prod]
+addr = "prod.example.com:8080"
 api_key = "sk-xxxxxxxxxxxx"
+
+[servers.dev]
+addr = "dev.example.com:8080"
+api_key = "sk-yyyyyyyyyyyy"
 ```
 
 后台隧道状态存储在 `~/.gout/daemon/`：
 
 ```
 ~/.gout/
-├── config.toml       ← 登录凭据
+├── config.toml       ← 多 server 配置
 └── daemon/
     ├── 8080.json     ← PID 文件
     ├── 8080.log      ← 日志
@@ -419,8 +439,9 @@ Arguments:
   <PORT>  本地端口号
 
 Options:
-  -d, --detach  后台运行
-  -h, --help    Print help
+  -d, --detach          后台运行
+  -s, --server <SERVER>  服务器名称或地址（默认使用配置中的 default_server）
+  -h, --help            Print help
 
 $ gout log --help
 查看后台隧道日志
@@ -441,6 +462,25 @@ Usage: gout kill <PORT>
 
 Arguments:
   <PORT>  本地端口号
+
+Options:
+  -h, --help  Print help
+
+$ gout show --help
+显示已保存的 server 列表和状态
+
+Usage: gout show
+
+Options:
+  -h, --help  Print help
+
+$ gout default --help
+设置默认 server
+
+Usage: gout default <NAME>
+
+Arguments:
+  <NAME>  server 名称
 
 Options:
   -h, --help  Print help

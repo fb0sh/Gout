@@ -20,56 +20,68 @@ fn cmd_login(name: &str, server: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-// ━━━ List（本地 daemon） ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━ List（按 server 分组展示） ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn cmd_list() -> Result<()> {
+    let servers = config::list_servers().unwrap_or_default();
     let mgr = daemon::DaemonManager::new();
     let entries = mgr.list();
-    if entries.is_empty() {
-        println!("[*] no active tunnels");
+
+    if servers.is_empty() && entries.is_empty() {
+        println!("[*] no servers configured and no active tunnels");
         return Ok(());
     }
-    println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
-    for e in &entries {
-        let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
-        println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+
+    for (name, sc, _is_default) in &servers {
+        let host = sc.addr.split(':').next().unwrap_or(&sc.addr);
+        let mut sv_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.remote.starts_with(host))
+            .collect();
+        sv_entries.sort_by_key(|e| e.port);
+
+        println!("{name}  ({})", sc.addr);
+        if sv_entries.is_empty() {
+            println!("  (no active tunnels)\n");
+        } else {
+            println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
+            for e in &sv_entries {
+                let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
+                println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+            }
+            println!();
+        }
     }
+
+    // 未匹配到任何 server 的孤立隧道
+    let unmatched: Vec<_> = entries
+        .iter()
+        .filter(|e| !servers.iter().any(|(_, sc, _)| {
+            let host = sc.addr.split(':').next().unwrap_or(&sc.addr);
+            e.remote.starts_with(host)
+        }))
+        .collect();
+    if !unmatched.is_empty() {
+        println!("(other)");
+        println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
+        for e in &unmatched {
+            let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
+            println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+        }
+        println!();
+    }
+
     Ok(())
 }
 
 // ━━━ Show（server + tunnel 概览） ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn cmd_show() -> Result<()> {
-    // 服务器列表
+    cmd_list()?;
     let servers = config::list_servers().unwrap_or_default();
-    if servers.is_empty() {
-        println!("[*] no servers configured");
-        println!("    run `gout login <name> <addr> <key>` to add one");
-    } else {
-        println!("Servers:");
-        for (name, sc, is_default) in &servers {
-            let def = if *is_default { " ← default" } else { "" };
-            println!("  {name}{def}");
-            println!("    addr:     {}", sc.addr);
-            println!("    api_key:  …{}", &sc.api_key[sc.api_key.len().saturating_sub(8)..]);
-        }
-        println!("  (use `gout default <name>` to change)");
+    if !servers.is_empty() {
+        println!("(use `gout default <name>` to change default)");
     }
-
-    // 本地后台隧道
-    let mgr = daemon::DaemonManager::new();
-    let entries = mgr.list();
-    if entries.is_empty() {
-        println!("\n[*] no active tunnels");
-    } else {
-        println!("\nActive tunnels:");
-        println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
-        for e in &entries {
-            let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
-            println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
-        }
-    }
-
     Ok(())
 }
 
