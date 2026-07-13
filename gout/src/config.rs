@@ -1,12 +1,24 @@
-/// Gout 配置 — `~/.gout/config.toml`（旧 `~/.goutrc` 自动迁移）。
+/// Gout 配置 — `~/.gout/config.toml`（多 server 支持）。
+///
+/// 旧 `~/.goutrc` / 旧单 server 格式自动迁移。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+
+// ━━━ 新版多 server 配置 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    pub server: ServerConfig,
+    #[serde(default = "default_server_name")]
+    pub default_server: String,
+    pub servers: HashMap<String, ServerConfig>,
+}
+
+fn default_server_name() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -15,7 +27,21 @@ pub struct ServerConfig {
     pub api_key: String,
 }
 
-/// gout 数据目录 `~/.gout`
+// ━━━ 旧版单 server 格式（用于迁移） ━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Deserialize)]
+struct OldConfig {
+    server: OldServerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct OldServerConfig {
+    addr: String,
+    api_key: String,
+}
+
+// ━━━ 路径 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 pub fn gout_dir() -> PathBuf {
     let home = if let Ok(h) = std::env::var("HOME") {
         PathBuf::from(h)
@@ -25,35 +51,98 @@ pub fn gout_dir() -> PathBuf {
     home.join(".gout")
 }
 
-/// 配置文件路径（新: `~/.gout/config.toml`，旧: `~/.goutrc`）
-pub fn config_path() -> PathBuf {
+fn config_path() -> PathBuf {
     let new = gout_dir().join("config.toml");
     if new.exists() {
         return new;
     }
-    // 兼容旧路径
     let legacy = gout_dir().with_file_name(".goutrc");
     if legacy.exists() {
         return legacy;
     }
-    new // 不存在时返回新路径，下次 write 会创建
+    new
 }
 
-/// 写入配置文件。写入新位置，自动清理旧文件。
-pub fn write(addr: &str, api_key: &str) -> Result<()> {
-    let cfg = Config {
-        server: ServerConfig {
+// ━━━ 公开 API ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 解析配置文件，返回新版 Config。旧格式自动转换。旧 `.goutrc` 静默迁移。
+pub fn read() -> Result<Config> {
+    let path = config_path();
+    if !path.exists() {
+        anyhow::bail!(
+            "config not found. Run `gout login <server> <key>` first.\n       looked in: {}",
+            path.display()
+        );
+    }
+    let content = std::fs::read_to_string(&path).context("read config")?;
+
+    // 尝试解析新版；失败则尝试旧版迁移
+    let cfg = match toml::from_str::<Config>(&content) {
+        Ok(c) => c,
+        Err(_) => {
+            let old: OldConfig =
+                toml::from_str(&content).context("config format unrecognized")?;
+            let mut servers = HashMap::new();
+            servers.insert(
+                "default".to_string(),
+                ServerConfig {
+                    addr: old.server.addr,
+                    api_key: old.server.api_key,
+                },
+            );
+            let cfg = Config {
+                default_server: "default".to_string(),
+                servers,
+            };
+            // 写回新版格式
+            let new_content = toml::to_string_pretty(&cfg)?;
+            let new_path = gout_dir().join("config.toml");
+            std::fs::create_dir_all(gout_dir()).ok();
+            std::fs::write(&new_path, &new_content).ok();
+            // 如果是旧版位置，清除旧文件
+            if path != new_path {
+                std::fs::remove_file(&path).ok();
+            }
+            cfg
+        }
+    };
+
+    Ok(cfg)
+}
+
+/// 写入一个 server 到配置。如果 key 为空表示只保存 server 信息。
+pub fn write(name: &str, addr: &str, api_key: &str) -> Result<()> {
+    let mut cfg = if config_path().exists() {
+        read().unwrap_or_else(|_| Config {
+            default_server: default_server_name(),
+            servers: HashMap::new(),
+        })
+    } else {
+        Config {
+            default_server: default_server_name(),
+            servers: HashMap::new(),
+        }
+    };
+
+    cfg.servers.insert(
+        name.to_string(),
+        ServerConfig {
             addr: addr.to_string(),
             api_key: api_key.to_string(),
         },
-    };
-    let content = toml::to_string_pretty(&cfg).context("serialize config")?;
+    );
 
+    // 第一次添加的 server 自动设为默认
+    if cfg.servers.len() == 1 {
+        cfg.default_server = name.to_string();
+    }
+
+    let content = toml::to_string_pretty(&cfg).context("serialize config")?;
     let new_path = gout_dir().join("config.toml");
     std::fs::create_dir_all(gout_dir()).context("create ~/.gout")?;
-    std::fs::write(&new_path, &content).context("write ~/.gout/config.toml")?;
+    std::fs::write(&new_path, &content).context("write config")?;
 
-    // 删除旧文件
+    // 清理旧文件
     let legacy = gout_dir().with_file_name(".goutrc");
     if legacy.exists() {
         std::fs::remove_file(&legacy).ok();
@@ -61,26 +150,37 @@ pub fn write(addr: &str, api_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// 读取配置文件。
-pub fn read() -> Result<Config> {
-    let path = config_path();
-    if !path.exists() {
-        anyhow::bail!("config not found. Run `gout login <server> <key>` first.\n       looked in: {}", path.display());
-    }
-    let content = std::fs::read_to_string(&path).context("read config")?;
-    let cfg: Config = toml::from_str(&content).context("parse config")?;
-
-    // 如果读的是旧位置，安全迁移到新位置
-    let new_path = gout_dir().join("config.toml");
-    if path != new_path {
-        std::fs::create_dir_all(gout_dir()).context("create ~/.gout for migration")?;
-        // 先写新文件，确认成功后再删旧文件，避免写失败时丢数据
-        std::fs::write(&new_path, &content).context("migrate config to ~/.gout/config.toml")?;
-        std::fs::remove_file(&path).ok();
-    }
-
-    Ok(cfg)
+/// 根据 server 名解析出 ServerConfig。空名或 "default" 返回默认 server。
+pub fn resolve(name: Option<&str>) -> Result<ServerConfig> {
+    let cfg = read()?;
+    let key = name.unwrap_or(&cfg.default_server);
+    let key = if key.is_empty() { &cfg.default_server } else { key };
+    cfg.servers
+        .get(key)
+        .cloned()
+        .or_else(|| {
+            // 也支持直接传 addr 匹配
+            cfg.servers.values().find(|s| s.addr == key).cloned()
+        })
+        .context(format!("server {key:?} not found"))
 }
+
+/// 列出所有 server 名及默认标记
+pub fn list_servers() -> Result<Vec<(String, ServerConfig, bool)>> {
+    let cfg = read()?;
+    let mut list: Vec<_> = cfg
+        .servers
+        .into_iter()
+        .map(|(name, sc)| {
+            let is_default = name == cfg.default_server;
+            (name, sc, is_default)
+        })
+        .collect();
+    list.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0))); // 默认排最前
+    Ok(list)
+}
+
+// ━━━ 测试 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(test)]
 mod tests {
@@ -89,7 +189,6 @@ mod tests {
 
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    /// 创建一个临时 HOME 目录并设置 HOME 变量
     fn with_temp_home(f: impl FnOnce(&std::path::Path)) {
         let _guard = HOME_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -107,12 +206,41 @@ mod tests {
     #[test]
     fn test_write_then_read() {
         with_temp_home(|_home| {
-            write("example.com:8080", "sk-test123").unwrap();
+            write("default", "example.com:8080", "sk-test123").unwrap();
             let cfg = read().unwrap();
-            assert_eq!(cfg.server.addr, "example.com:8080");
-            assert_eq!(cfg.server.api_key, "sk-test123");
-            // 写入新位置
-            assert!(gout_dir().join("config.toml").exists());
+            let s = cfg.servers.get("default").unwrap();
+            assert_eq!(s.addr, "example.com:8080");
+            assert_eq!(s.api_key, "sk-test123");
+            assert_eq!(cfg.default_server, "default");
+        });
+    }
+
+    #[test]
+    fn test_multi_server() {
+        with_temp_home(|_home| {
+            write("prod", "prod.com:8080", "sk-prod").unwrap();
+            write("dev", "dev.com:8080", "sk-dev").unwrap();
+            let cfg = read().unwrap();
+            assert_eq!(cfg.servers.len(), 2);
+            assert_eq!(cfg.default_server, "prod"); // 第一个自动默认
+        });
+    }
+
+    #[test]
+    fn test_resolve_default() {
+        with_temp_home(|_home| {
+            write("main", "m:8080", "sk-m").unwrap();
+            let s = resolve(None).unwrap();
+            assert_eq!(s.addr, "m:8080");
+        });
+    }
+
+    #[test]
+    fn test_resolve_by_addr() {
+        with_temp_home(|_home| {
+            write("x", "x.com:8080", "sk-x").unwrap();
+            let s = resolve(Some("x.com:8080")).unwrap();
+            assert_eq!(s.api_key, "sk-x");
         });
     }
 
@@ -125,42 +253,36 @@ mod tests {
     }
 
     #[test]
-    fn test_write_overwrites() {
-        with_temp_home(|_home| {
-            write("a:1", "key-a").unwrap();
-            write("b:2", "key-b").unwrap();
-            let cfg = read().unwrap();
-            assert_eq!(cfg.server.addr, "b:2");
-            assert_eq!(cfg.server.api_key, "key-b");
-        });
-    }
-
-    #[test]
-    fn test_migrates_legacy_rc() {
+    fn test_migrates_old_format() {
         with_temp_home(|home| {
-            // 在旧位置写文件
-            let legacy = home.join(".goutrc");
-            let content = r#"[server]
+            let old_content = r#"[server]
 addr = "old:8080"
 api_key = "sk-old"
 "#;
-            std::fs::write(&legacy, content).unwrap();
+            std::fs::write(home.join(".goutrc"), old_content).unwrap();
 
-            // read 应静默迁移到新位置
             let cfg = read().unwrap();
-            assert_eq!(cfg.server.addr, "old:8080");
+            let s = cfg.servers.get("default").unwrap();
+            assert_eq!(s.addr, "old:8080");
+            assert_eq!(s.api_key, "sk-old");
+            assert_eq!(cfg.default_server, "default");
 
-            assert!(!legacy.exists(), "legacy file should be removed");
-            assert!(gout_dir().join("config.toml").exists());
+            // 旧文件已迁移
+            assert!(!home.join(".goutrc").exists());
+            assert!(config_path().exists());
         });
     }
 
     #[test]
-    fn test_config_path_respects_home() {
-        with_temp_home(|home| {
-            let dir = gout_dir();
-            assert!(dir.starts_with(home));
-            assert_eq!(dir.file_name().unwrap(), ".gout");
+    fn test_list_servers() {
+        with_temp_home(|_home| {
+            write("b", "b:1", "k").unwrap();
+            write("a", "a:2", "k").unwrap();
+            let list = list_servers().unwrap();
+            assert!(list.len() >= 2);
+            // 第一条是默认（b，先添加的）
+            assert_eq!(list[0].0, "b");
+            assert!(list[0].2); // is_default
         });
     }
 }

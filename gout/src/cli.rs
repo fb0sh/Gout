@@ -13,6 +13,8 @@ pub struct Cli {
 pub enum Command {
     /// 登录远程服务器，保存凭据
     Login {
+        /// 服务器名称（可选，默认按地址自动生成）
+        name: Option<String>,
         /// 服务器地址，如 `server.example.com:8080`
         server: String,
         /// API key
@@ -25,6 +27,9 @@ pub enum Command {
         /// 后台运行
         #[arg(long, short = 'd')]
         detach: bool,
+        /// 服务器名称或地址（默认使用配置中的 default_server）
+        #[arg(long, short = 's')]
+        server: Option<String>,
     },
     /// 创建 UDP 隧道
     Udp {
@@ -33,6 +38,9 @@ pub enum Command {
         /// 后台运行
         #[arg(long, short = 'd')]
         detach: bool,
+        /// 服务器名称或地址
+        #[arg(long, short = 's')]
+        server: Option<String>,
     },
     /// 创建 HTTP 隧道（等价于 TCP）
     Http {
@@ -41,6 +49,9 @@ pub enum Command {
         /// 后台运行
         #[arg(long, short = 'd')]
         detach: bool,
+        /// 服务器名称或地址
+        #[arg(long, short = 's')]
+        server: Option<String>,
     },
     /// 列出本地后台隧道
     List,
@@ -57,6 +68,8 @@ pub enum Command {
         /// 本地端口号
         port: u16,
     },
+    /// 显示已保存的 server 列表和状态
+    Show,
 }
 
 impl Cli {
@@ -66,9 +79,9 @@ impl Cli {
         // 子进程模式（由 -d 启动的 daemon），结束后清理 PID 文件
         if let Some(pidfile) = std::env::var("GOUT_DAEMON_PIDFILE").ok() {
             let result = match cli.command {
-                Command::Tcp { port, .. } => crate::cmd_tunnel("tcp", port),
-                Command::Udp { port, .. } => crate::cmd_tunnel("udp", port),
-                Command::Http { port, .. } => crate::cmd_tunnel("http", port),
+                Command::Tcp { port, .. } => crate::cmd_tunnel("tcp", port, None),
+                Command::Udp { port, .. } => crate::cmd_tunnel("udp", port, None),
+                Command::Http { port, .. } => crate::cmd_tunnel("http", port, None),
                 _ => anyhow::bail!("daemon mode unsupported for this command"),
             };
             std::fs::remove_file(&pidfile).ok();
@@ -76,16 +89,22 @@ impl Cli {
         }
 
         match cli.command {
-            Command::Login { server, key } => crate::cmd_login(&server, &key),
-            Command::Tcp { port, detach: true } => crate::cmd_start_daemon("tcp", port),
-            Command::Tcp { port, detach: false } => crate::cmd_tunnel("tcp", port),
-            Command::Udp { port, detach: true } => crate::cmd_start_daemon("udp", port),
-            Command::Udp { port, detach: false } => crate::cmd_tunnel("udp", port),
-            Command::Http { port, detach: true } => crate::cmd_start_daemon("http", port),
-            Command::Http { port, detach: false } => crate::cmd_tunnel("http", port),
+            Command::Login { name, server, key } => {
+                let n = name.unwrap_or_else(|| {
+                    server.split(':').next().unwrap_or(&server).to_string()
+                });
+                crate::cmd_login(&n, &server, &key)
+            }
+            Command::Tcp { port, detach: true, server } => crate::cmd_start_daemon("tcp", port, server.as_deref()),
+            Command::Tcp { port, detach: false, server } => crate::cmd_tunnel("tcp", port, server.as_deref()),
+            Command::Udp { port, detach: true, server } => crate::cmd_start_daemon("udp", port, server.as_deref()),
+            Command::Udp { port, detach: false, server } => crate::cmd_tunnel("udp", port, server.as_deref()),
+            Command::Http { port, detach: true, server } => crate::cmd_start_daemon("http", port, server.as_deref()),
+            Command::Http { port, detach: false, server } => crate::cmd_tunnel("http", port, server.as_deref()),
             Command::Log { port, follow } => crate::cmd_log(port, follow),
             Command::Kill { port } => crate::cmd_kill(port),
             Command::List => crate::cmd_list(),
+            Command::Show => crate::cmd_show(),
         }
     }
 }

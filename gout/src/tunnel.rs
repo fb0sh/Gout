@@ -12,7 +12,7 @@ pub struct TunnelSession {
     pub token: u64,
     pub tunnel_type: TunnelType,
     pub local_port: u16,
-    config: crate::config::Config,
+    server: crate::config::ServerConfig,
 }
 
 /// 返回一个 future：前台等待 Ctrl+C，后台永不 resolve。
@@ -30,8 +30,8 @@ impl TunnelSession {
     ///
     /// 如果环境变量 `GOUT_DAEMON_TOKEN` 存在（由 `-d` 的父进程设置），
     /// 则跳过 REST API 创建，直接使用传入的 token 进行握手。
-    pub async fn create(config: crate::config::Config, tunnel_type: TunnelType, local_port: u16) -> Result<Self> {
-        let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
+    pub async fn create(server: crate::config::ServerConfig, tunnel_type: TunnelType, local_port: u16) -> Result<Self> {
+        let server_host = server.addr.split(':').next().unwrap_or(&server.addr);
 
         // 检查是否由父进程（-d）预先创建了隧道
         let (token, data_port) = if let (Ok(t), Ok(dp)) = (
@@ -45,7 +45,7 @@ impl TunnelSession {
             (t, dp)
         } else {
             // 正常模式：通过 REST API 创建
-            let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
+            let gout = gout_api::client::GoutClient::new(&server.addr, &server.api_key);
             let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
 
             let local_url = if tunnel_type == TunnelType::Http {
@@ -84,27 +84,27 @@ impl TunnelSession {
             _ => {
                 println!("[+] signal channel established, waiting for connections...");
                 println!("    Ctrl+C to close tunnel");
-                Self::run_signal_loop(stream, &config, token, tunnel_type, local_port, data_port).await?;
+                Self::run_signal_loop(stream, &server, token, tunnel_type, local_port, data_port).await?;
             }
         }
 
         // 清理
         println!("[-] closing tunnel...");
-        let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
+        let gout = gout_api::client::GoutClient::new(&server.addr, &server.api_key);
         gout.delete_tunnel(token).await.ok();
 
         Ok(Self {
             token,
             tunnel_type,
             local_port,
-            config,
+            server,
         })
     }
 
     /// 信号循环：等待服务端通知 → 对每个新连接建立数据通道
     async fn run_signal_loop(
         mut stream: TcpStream,
-        config: &crate::config::Config,
+        server: &crate::config::ServerConfig,
         token: u64,
         tunnel_type: TunnelType,
         local_port: u16,
@@ -115,10 +115,10 @@ impl TunnelSession {
                 sig = gout_api::data_channel::read_signal(&mut stream) => {
                     match sig {
                         gout_api::data_channel::SignalKind::NewConnection => {
-                            let config = config.clone();
+                            let sc = server.clone();
                             let dp = data_port;
                             tokio::spawn(async move {
-                                Self::handle_data_channel(config, token, tunnel_type, local_port, dp).await;
+                                Self::handle_data_channel(sc, token, tunnel_type, local_port, dp).await;
                             });
                         }
                         gout_api::data_channel::SignalKind::Disconnected => break,
@@ -189,13 +189,13 @@ impl TunnelSession {
 
     /// 处理一条外部连接：数据通道 → localhost pipe
     async fn handle_data_channel(
-        config: crate::config::Config,
+        server: crate::config::ServerConfig,
         token: u64,
         tunnel_type: TunnelType,
         local_port: u16,
         data_port: u16,
     ) {
-        let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
+        let server_host = server.addr.split(':').next().unwrap_or(&server.addr);
         let data_addr = format!("{server_host}:{data_port}");
         let mut stream = match TcpStream::connect(&data_addr).await {
             Ok(s) => s,

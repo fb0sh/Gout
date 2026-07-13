@@ -94,10 +94,10 @@ impl KeyStore {
         Ok(keys.iter().any(|k| k.key == key && k.admin))
     }
 
-    /// 验证是否是有效的隧道 key（非 admin）
+    /// 验证是否是有效的隧道 key（admin key 也可用于隧道操作）
     pub async fn validate_tunnel(&self, key: &str) -> Result<bool> {
         let keys = self.load().await?;
-        Ok(keys.iter().any(|k| k.key == key && !k.admin))
+        Ok(keys.iter().any(|k| k.key == key))
     }
 
     /// 获取第一个 admin key（用于 Web 面板展示）
@@ -193,7 +193,8 @@ mod tests {
         assert!(store.validate_admin("sk-admin").await.unwrap());
         assert!(!store.validate_admin("sk-user").await.unwrap());
 
-        assert!(!store.validate_tunnel("sk-admin").await.unwrap());
+        // admin key 现在也可用于隧道操作
+        assert!(store.validate_tunnel("sk-admin").await.unwrap());
         assert!(store.validate_tunnel("sk-user").await.unwrap());
     }
 
