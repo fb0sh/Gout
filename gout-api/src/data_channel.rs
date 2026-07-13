@@ -81,6 +81,32 @@ pub async fn server_reject(
     stream.write_all(&resp).await
 }
 
+/// 信号通道消息类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalKind {
+    /// 有新外部连接到达
+    NewConnection,
+    /// 信号通道已关闭（流关闭或读错误）
+    Disconnected,
+}
+
+/// 从信号通道读取一个信号（1 字节）。
+///
+/// 返回 [`SignalKind`]，不会传播 I/O 错误——任何读失败都映射为 `Disconnected`。
+pub async fn read_signal<R: AsyncRead + Unpin>(reader: &mut R) -> SignalKind {
+    let mut buf = [0u8; 1];
+    match reader.read_exact(&mut buf).await {
+        Ok(_) if buf[0] == crate::SIGNAL_NEW_CONN => SignalKind::NewConnection,
+        Ok(_) => SignalKind::NewConnection,  // treat any non-EOF byte as notification
+        Err(_) => SignalKind::Disconnected,
+    }
+}
+
+/// 向信号通道发送"新外部连接"通知（1 字节 `SIGNAL_NEW_CONN`）。
+pub async fn send_notification<W: AsyncWrite + Unpin>(writer: &mut W) -> std::io::Result<()> {
+    writer.write_all(&[crate::SIGNAL_NEW_CONN]).await
+}
+
 /// 双向 pipe 两个 TCP stream，任一方断开即结束。
 ///
 /// 内部使用 `tokio::io::copy` 和 `tokio::select!` 实现双向转发。

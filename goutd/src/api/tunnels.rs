@@ -33,7 +33,7 @@ pub async fn list_tunnels(
             tunnel_type: t.tunnel_type.as_str().to_string(),
             public_port: t.public_port,
             key_name: t.key_name,
-            has_signal: t.has_signal,
+            connected: t.connected,
             pending_count: t.pending_count,
         })
         .collect();

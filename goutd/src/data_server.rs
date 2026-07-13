@@ -82,7 +82,7 @@ impl DataServer {
                         msg = signal_rx.recv() => {
                             match msg {
                                 Some(tunnel::SignalMsg::NewExternalConnection) => {
-                                    if let Err(e) = writer.write_all(&[gout_api::SIGNAL_NEW_CONN]).await {
+                                    if let Err(e) = gout_api::data_channel::send_notification(&mut writer).await {
                                         warn!("notify client failed: {e}");
                                         break;
                                     }
@@ -132,8 +132,8 @@ impl DataServer {
         gout_api::data_channel::server_accept(&mut stream).await?;
         info!("UDP data channel established for tunnel {}", token);
 
-        // 注册 dummy signal channel 标记活跃，防止清理循环误关
-        let _ = mgr.register_signal_channel(token).await;
+        // 标记隧道活跃，防止清理循环误关
+        let _ = mgr.mark_connected(token).await;
 
         let udp_socket = match mgr.get_udp_socket(token).await {
             Some(s) => s,

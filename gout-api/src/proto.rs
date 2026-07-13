@@ -131,8 +131,8 @@ pub struct TunnelListEntry {
     pub public_port: u16,
     /// 创建此隧道的 API key 名称
     pub key_name: String,
-    /// 是否已有客户端建立信号通道
-    pub has_signal: bool,
+    /// 客户端是否已连接（TCP signal 或 UDP data channel）
+    pub connected: bool,
     /// 待转发的挂起连接数
     pub pending_count: usize,
 }

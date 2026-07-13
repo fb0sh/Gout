@@ -71,20 +71,17 @@ impl TunnelSession {
         tunnel_type: TunnelType,
         local_port: u16,
     ) -> Result<()> {
-        let mut buf = [0u8; 1];
         loop {
             tokio::select! {
-                r = stream.read(&mut buf) => {
-                    match r {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            if buf[0] == gout_api::SIGNAL_NEW_CONN {
-                                let config = config.clone();
-                                tokio::spawn(async move {
-                                    Self::handle_data_channel(config, token, tunnel_type, local_port).await;
-                                });
-                            }
+                sig = gout_api::data_channel::read_signal(&mut stream) => {
+                    match sig {
+                        gout_api::data_channel::SignalKind::NewConnection => {
+                            let config = config.clone();
+                            tokio::spawn(async move {
+                                Self::handle_data_channel(config, token, tunnel_type, local_port).await;
+                            });
                         }
+                        gout_api::data_channel::SignalKind::Disconnected => break,
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {

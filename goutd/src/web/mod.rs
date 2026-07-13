@@ -35,7 +35,7 @@ struct TunnelViewModel {
     tunnel_type: String,
     public_port: u16,
     key_name: String,
-    has_signal: bool,
+    connected: bool,
     pending_count: usize,
 }
 
@@ -94,7 +94,7 @@ pub async fn dashboard(
             tunnel_type: t.tunnel_type.as_str().to_string(),
             public_port: t.public_port,
             key_name: t.key_name,
-            has_signal: t.has_signal,
+            connected: t.connected,
             pending_count: t.pending_count,
         })
         .collect();

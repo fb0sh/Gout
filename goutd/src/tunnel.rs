@@ -24,6 +24,42 @@ pub enum SignalMsg {
     Shutdown,
 }
 
+// ━━━ 纯同步端口池 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 端口池 — 纯同步，可测试（无需 tokio runtime）。
+#[derive(Debug)]
+pub struct PortPool {
+    ports: Vec<u16>,
+}
+
+impl PortPool {
+    pub fn new(start: u16, end: u16) -> Self {
+        // 从高到低存放，pop 取最低可用端口
+        let ports: Vec<u16> = (start..=end).rev().collect();
+        Self { ports }
+    }
+
+    /// 分配一个端口。返回 None 表示已耗尽。
+    pub fn allocate(&mut self) -> Option<u16> {
+        self.ports.pop()
+    }
+
+    /// 归还端口。
+    pub fn release(&mut self, port: u16) {
+        self.ports.push(port);
+    }
+
+    /// 剩余端口数（用于测试）。
+    pub fn available(&self) -> usize {
+        self.ports.len()
+    }
+
+    /// 是否包含指定端口（用于测试）。
+    pub fn contains(&self, port: u16) -> bool {
+        self.ports.contains(&port)
+    }
+}
+
 // ━━━ 隧道状态 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[derive(Debug)]
@@ -33,6 +69,9 @@ pub struct Tunnel {
     pub public_port: u16,
     pub key_name: String,
     pub created_at: Instant,
+    /// 客户端是否已连接数据通道
+    /// TCP：register_signal_channel 设 true；UDP：mark_connected 设 true
+    pub connected: bool,
     /// 信号通道发送端，data server accept 循环使用
     pub signal_tx: Option<tokio::sync::mpsc::Sender<SignalMsg>>,
     /// TCP 隧道：待转发的活跃外部连接 (conn_id → TcpStream)
@@ -46,7 +85,7 @@ pub struct Tunnel {
 
 pub struct TunnelManager {
     tunnels: RwLock<HashMap<Token, Tunnel>>,
-    free_ports: Mutex<Vec<u16>>,
+    port_pool: Mutex<PortPool>,
     data_port: u16,
     /// 握手超时时间
     handshake_timeout: Duration,
@@ -56,11 +95,9 @@ pub struct TunnelManager {
 
 impl TunnelManager {
     pub fn new(port_start: u16, port_end: u16, data_port: u16) -> Self {
-        // 端口池：从高到低存放，pop 取最低可用端口
-        let free_ports: Vec<u16> = (port_start..=port_end).rev().collect();
         Self {
             tunnels: RwLock::new(HashMap::new()),
-            free_ports: Mutex::new(free_ports),
+            port_pool: Mutex::new(PortPool::new(port_start, port_end)),
             data_port,
             handshake_timeout: Duration::from_secs(30),
             cleanup_started: AtomicBool::new(false),
@@ -69,12 +106,12 @@ impl TunnelManager {
 
     /// 分配一个公网端口。返回 None 表示端口池已耗尽。
     pub async fn allocate_port(&self) -> Option<u16> {
-        self.free_ports.lock().await.pop()
+        self.port_pool.lock().await.allocate()
     }
 
     /// 归还端口
     pub async fn release_port(&self, port: u16) {
-        self.free_ports.lock().await.push(port);
+        self.port_pool.lock().await.release(port);
     }
 
     pub fn data_port(&self) -> u16 {
@@ -97,6 +134,7 @@ impl TunnelManager {
             public_port: port,
             key_name,
             created_at: Instant::now(),
+            connected: false,
             signal_tx: None,
             pending_conns: Vec::new(),
             udp_socket: None,
@@ -169,6 +207,7 @@ impl TunnelManager {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<SignalMsg>(32);
         tunnel.signal_tx = Some(tx);
+        tunnel.connected = true;
         Ok(rx)
     }
 
@@ -238,6 +277,14 @@ impl TunnelManager {
             .map(|t| t.tunnel_type)
     }
 
+    /// 标记隧道为已连接（UDP 数据通道建立时调用）。
+    pub async fn mark_connected(&self, token: Token) -> Result<(), String> {
+        let mut tunnels = self.tunnels.write().await;
+        let tunnel = tunnels.get_mut(&token).ok_or("tunnel not found")?;
+        tunnel.connected = true;
+        Ok(())
+    }
+
     /// 设置隧道 UDP socket
     pub async fn set_udp_socket(&self, token: Token, socket: Arc<UdpSocket>) -> Result<(), String> {
         let mut tunnels = self.tunnels.write().await;
@@ -267,7 +314,7 @@ impl TunnelManager {
                 tunnel_type: t.tunnel_type,
                 public_port: t.public_port,
                 key_name: t.key_name.clone(),
-                has_signal: t.signal_tx.is_some(),
+                connected: t.connected,
                 pending_count: t.pending_conns.len(),
             })
             .collect()
@@ -288,13 +335,7 @@ impl TunnelManager {
                 let mut to_close = Vec::new();
 
                 for (token, tunnel) in mgr.tunnels.read().await.iter() {
-                    let connected = match tunnel.tunnel_type {
-                        // UDP：有数据通道连接时 handle_udp 会注册 dummy signal_tx
-                        // 防止清理循环误关
-                        TunnelType::Udp => tunnel.signal_tx.is_some(),
-                        _ => tunnel.signal_tx.is_some(),
-                    };
-                    if !connected
+                    if !tunnel.connected
                         && now.duration_since(tunnel.created_at) > timeout
                     {
                         to_close.push(*token);
@@ -318,7 +359,7 @@ pub struct TunnelInfo {
     pub tunnel_type: TunnelType,
     pub public_port: u16,
     pub key_name: String,
-    pub has_signal: bool,
+    pub connected: bool,
     pub pending_count: usize,
 }
 
@@ -333,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_tunnel_allocates_port() {
         let mgr = make_mgr();
-        let free_before = mgr.free_ports.lock().await.len();
+        let free_before = mgr.port_pool.lock().await.available();
         let (token, port) = mgr
             .create_tunnel(TunnelType::Tcp, "test".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
@@ -341,7 +382,7 @@ mod tests {
         assert!(token != 0);
         assert!(port >= 20000 && port <= 20010);
 
-        let free_after = mgr.free_ports.lock().await.len();
+        let free_after = mgr.port_pool.lock().await.available();
         assert_eq!(free_after, free_before - 1);
     }
 
@@ -380,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_tunnel_frees_port() {
         let mgr = make_mgr();
-        let free_before = mgr.free_ports.lock().await.len();
+        let free_before = mgr.port_pool.lock().await.available();
         let (token, port) = mgr
             .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .await
@@ -388,9 +429,9 @@ mod tests {
 
         mgr.close_tunnel(token).await.unwrap();
 
-        let free_after = mgr.free_ports.lock().await.len();
+        let free_after = mgr.port_pool.lock().await.available();
         assert_eq!(free_after, free_before);
-        assert!(mgr.free_ports.lock().await.contains(&port));
+        assert!(mgr.port_pool.lock().await.contains(port));
     }
 
     #[tokio::test]
@@ -420,6 +461,47 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].token, token);
         assert_eq!(list[0].key_name, "my key");
-        assert!(!list[0].has_signal);
+        assert!(!list[0].connected);
+    }
+
+    // ━━━ 纯同步 PortPool 测试（无需 tokio runtime） ━━━━━━━━━━━
+
+    #[test]
+    fn port_pool_allocates_in_range() {
+        let mut pool = PortPool::new(20000, 20005);
+        assert_eq!(pool.available(), 6);
+        let port = pool.allocate().unwrap();
+        assert!(port >= 20000 && port <= 20005);
+    }
+
+    #[test]
+    fn port_pool_exhaustion() {
+        let mut pool = PortPool::new(30000, 30000); // only 1 port
+        assert!(pool.allocate().is_some());
+        assert!(pool.allocate().is_none());
+    }
+
+    #[test]
+    fn port_pool_release_returns_port() {
+        let mut pool = PortPool::new(40000, 40000);
+        let p = pool.allocate().unwrap();
+        assert_eq!(pool.available(), 0);
+        pool.release(p);
+        assert_eq!(pool.available(), 1);
+        assert!(pool.contains(p));
+    }
+
+    #[test]
+    fn port_pool_release_orders_do_not_matter() {
+        let mut pool = PortPool::new(100, 101);
+        let a = pool.allocate().unwrap();
+        let b = pool.allocate().unwrap();
+        pool.release(a);
+        pool.release(b);
+        assert_eq!(pool.available(), 2);
+        // 应该能再次分配到之前释放的端口
+        let _c = pool.allocate().unwrap();
+        let _d = pool.allocate().unwrap();
+        assert_eq!(pool.available(), 0);
     }
 }
