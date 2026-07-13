@@ -30,7 +30,6 @@ pub struct DaemonEntry {
     pub pid: u32,
     pub port: u16,
     pub tunnel_type: String,
-    pub alive: bool,
     /// 完整远端地址（如 "frp.freet.tech:10000"）
     pub remote: String,
 }
@@ -136,7 +135,6 @@ impl DaemonManager {
                     pid: info.pid,
                     port: info.port,
                     tunnel_type: info.tunnel_type,
-                    alive: true,
                     remote,
                 });
             } else {
@@ -155,38 +153,6 @@ impl DaemonManager {
         }
 
         entries
-    }
-
-    /// 启动后台隧道（仅前台模式用，不会预先创建隧道）。
-    pub fn start(&self, tunnel_type: &str, port: u16) -> Result<u32> {
-        self.ensure_dir()?;
-        let pidfile = self.pidfile(port);
-
-        Self::check_existing(&pidfile, port)?;
-
-        let exe = std::env::current_exe().context("cannot get own exe path")?;
-        let logfile = self.logfile(port);
-        let log_handle = std::fs::File::create(&logfile).context("create log file")?;
-
-        let child = std::process::Command::new(&exe)
-            .args([tunnel_type, &port.to_string()])
-            .env("GOUT_DAEMON_PIDFILE", pidfile.to_str().unwrap())
-            .stdin(std::process::Stdio::null())
-            .stdout(log_handle.try_clone().context("clone log handle")?)
-            .stderr(log_handle)
-            .spawn()
-            .context("failed to spawn daemon")?;
-
-        let info = DaemonInfo {
-            pid: child.id(),
-            port,
-            tunnel_type: tunnel_type.to_string(),
-            server_host: String::new(),
-            public_port: 0,
-        };
-        std::fs::write(&pidfile, serde_json::to_string_pretty(&info)?)?;
-
-        Ok(child.id())
     }
 
     /// 启动后台隧道（父进程已创建隧道，传入 token + data_port）。

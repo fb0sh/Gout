@@ -60,13 +60,7 @@ impl GoutAdminClient {
             .await
             .context("REST create key failed")?;
 
-        if !resp.status().is_success() {
-            let j: ApiResponse<CreateKeyResponse> = resp.json().await?;
-            anyhow::bail!("{}", j.error.unwrap_or_default());
-        }
-
-        let j: ApiResponse<CreateKeyResponse> = resp.json().await?;
-        j.data.context("no key data")
+        crate::parse_api_response(resp).await
     }
 
     /// 列出所有普通 API key。
@@ -81,8 +75,7 @@ impl GoutAdminClient {
             .await
             .context("REST list keys failed")?;
 
-        let j: ApiResponse<Vec<KeyInfo>> = resp.json().await?;
-        Ok(j.data.unwrap_or_default())
+        crate::parse_api_response(resp).await
     }
 
     /// 删除一个 API key。

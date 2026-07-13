@@ -3,7 +3,7 @@
 //! 负责隧道的 CRUD 操作（创建、列出、删除）。
 //! 数据通道的握手和转发由 [`data_channel`](crate::data_channel) 模块处理。
 
-use crate::{ApiResponse, CreateTunnelRequest, TunnelResponse};
+use crate::{CreateTunnelRequest, TunnelResponse};
 use anyhow::{Context, Result};
 
 /// 隧道操作客户端。
@@ -70,19 +70,7 @@ impl GoutClient {
             .await
             .context("REST create tunnel failed")?;
 
-        if !resp.status().is_success() {
-            let api_resp: ApiResponse<TunnelResponse> = resp
-                .json()
-                .await
-                .context("parse error response")?;
-            anyhow::bail!("server error: {}", api_resp.error.unwrap_or_default());
-        }
-
-        let api_resp: ApiResponse<TunnelResponse> = resp
-            .json()
-            .await
-            .context("parse success response")?;
-        api_resp.data.context("no tunnel data in response")
+        crate::parse_api_response(resp).await
     }
 
     /// 列出所有活跃隧道。
@@ -98,11 +86,7 @@ impl GoutClient {
             .await
             .context("REST list tunnels failed")?;
 
-        let api_resp: ApiResponse<Vec<crate::TunnelListEntry>> = resp
-            .json()
-            .await
-            .context("parse list tunnels response")?;
-        Ok(api_resp.data.unwrap_or_default())
+        crate::parse_api_response(resp).await
     }
 
     /// 删除指定 token 的隧道。

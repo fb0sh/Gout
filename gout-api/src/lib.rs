@@ -27,9 +27,37 @@
 //! # }
 //! ```
 
+use anyhow::Context;
+
 pub mod admin;
 pub mod client;
 pub mod data_channel;
 
 mod proto;
 pub use proto::*;
+
+// ━━━ 内部 HTTP 辅助 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// 解析 REST API 响应体，提取 `data` 字段。
+/// 非 2xx 时从 `error` 字段构造错误信息。
+pub(crate) async fn parse_api_response<T>(
+    resp: reqwest::Response,
+) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let status = resp.status();
+    if !status.is_success() {
+        let body: ApiResponse<T> = resp
+            .json()
+            .await
+            .unwrap_or(ApiResponse {
+                success: false,
+                data: None,
+                error: Some(status.to_string()),
+            });
+        anyhow::bail!("{}", body.error.unwrap_or_default());
+    }
+    let body: ApiResponse<T> = resp.json().await?;
+    body.data.context("no data in response")
+}

@@ -268,15 +268,6 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// 获取隧道信息（如果存在）
-    pub async fn get_tunnel(&self, token: Token) -> Option<TunnelType> {
-        self.tunnels
-            .read()
-            .await
-            .get(&token)
-            .map(|t| t.tunnel_type)
-    }
-
     /// 查询隧道是否已建立数据通道连接
     pub async fn is_connected(&self, token: Token) -> Option<bool> {
         self.tunnels.read().await.get(&token).map(|t| t.connected)

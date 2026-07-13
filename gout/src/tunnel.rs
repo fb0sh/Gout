@@ -24,9 +24,9 @@ impl TunnelSession {
         let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
 
         // 检查是否由父进程（-d）预先创建了隧道
-        let (token, data_port) = if let (Some(t), Some(dp)) = (
-            std::env::var("GOUT_DAEMON_TOKEN").ok(),
-            std::env::var("GOUT_DAEMON_DATA_PORT").ok(),
+        let (token, data_port) = if let (Ok(t), Ok(dp)) = (
+            std::env::var("GOUT_DAEMON_TOKEN"),
+            std::env::var("GOUT_DAEMON_DATA_PORT"),
         ) {
             let t: u64 = t.parse()?;
             let dp: u16 = dp.parse()?;
