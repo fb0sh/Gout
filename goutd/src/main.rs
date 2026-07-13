@@ -11,7 +11,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use config::ServerConfig;
 
@@ -32,6 +32,30 @@ async fn main() -> Result<()> {
         info!("  Save this key! It won't be shown again.");
         info!("──────────────────────────────────────────");
     }
+
+    // 检测系统临时端口范围（Linux 特有）
+    if let Ok(content) = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range") {
+        if let Some((a, b)) = content.trim().split_once(' ') {
+            let ephem_start: u16 = a.parse().unwrap_or(32768);
+            let ephem_end: u16 = b.parse().unwrap_or(60999);
+            info!("system ephemeral port range: {}-{}", ephem_start, ephem_end);
+            if config.port_start <= ephem_end && config.port_end >= ephem_start {
+                warn!(
+                    "tunnel port range {}-{} overlaps with ephemeral range {}-{} — consider --port-end {} to avoid conflicts",
+                    config.port_start, config.port_end, ephem_start, ephem_end,
+                    ephem_start.saturating_sub(1)
+                );
+            }
+        }
+    }
+
+    let port_count = if config.port_end >= config.port_start {
+        (config.port_end - config.port_start + 1) as u32
+    } else {
+        0
+    };
+    info!("tunnel port range: {}-{} ({} ports)",
+        config.port_start, config.port_end, port_count);
 
     // 初始化隧道管理器
     let tunnel_mgr = Arc::new(tunnel::TunnelManager::new(

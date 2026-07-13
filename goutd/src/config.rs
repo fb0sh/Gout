@@ -14,12 +14,12 @@ pub struct ServerConfig {
     #[arg(long, default_value = "0.0.0.0:8081")]
     pub data_addr: String,
 
-    /// 公网端口范围起始
+    /// 公网端口范围起始（默认 10000，避开系统临时端口范围）
     #[arg(long, default_value = "10000")]
     pub port_start: u16,
 
-    /// 公网端口范围结束
-    #[arg(long, default_value = "10100")]
+    /// 公网端口范围结束（默认 32767，Linux 临时端口默认从 32768 开始）
+    #[arg(long, default_value = "32767")]
     pub port_end: u16,
 
     /// 数据存储目录（keys.toml 存放位置）
