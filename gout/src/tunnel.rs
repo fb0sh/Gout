@@ -22,8 +22,17 @@ impl TunnelSession {
         let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
 
         let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
-        println!("[+] {} tunnel: 127.0.0.1:{} -> {}:{}",
-            tunnel_type, local_port, server_host, tunnel.public_port);
+        let local_url = if tunnel_type == TunnelType::Http {
+            format!("http://127.0.0.1:{}", local_port)
+        } else {
+            format!("127.0.0.1:{}", local_port)
+        };
+        let remote_url = if tunnel_type == TunnelType::Http {
+            format!("http://{}:{}", server_host, tunnel.public_port)
+        } else {
+            format!("{}:{}", server_host, tunnel.public_port)
+        };
+        println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
 
         // 连接数据端口 + 握手
         let data_addr = format!("{}:{}", server_host, tunnel.data_port);
