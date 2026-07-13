@@ -9,3 +9,12 @@ license = "MIT"
 authors = ["fb0sh"]
 repository = "https://github.com/fb0sh/Gout"
 description = "A lightweight reverse proxy / tunnel tool. Expose local services to the public internet with one command."
+
+[profile.release]
+# 极致体积优化
+opt-level = "z"          # 优化体积而非速度
+lto = true                # 链接时全程序优化
+codegen-units = 1         # 单 codegen 单元（更多内联机会）
+panic = "abort"          # 去掉 unwinding 表
+strip = true              # 剥离所有符号
+# debug = false（默认）
