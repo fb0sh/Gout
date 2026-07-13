@@ -21,22 +21,60 @@ fn cmd_login(server: &str, key: &str) -> Result<()> {
 
 /// 处理 `list` 命令
 fn cmd_list() -> Result<()> {
-    let cfg = config::read()?;
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let gout = gout_api::client::GoutClient::new(&cfg.server.addr, &cfg.server.api_key);
-        let tunnels = gout.list_tunnels().await?;
-        if tunnels.is_empty() {
-            println!("[*] no active tunnels");
-        } else {
-            println!("{:<20}  {:>5}  {:>4}  {:>7}", "TUNNEL_ID", "PORT", "TYPE", "STATUS");
-            for t in &tunnels {
-                let status = if t.connected { "active" } else { "waiting" };
-                println!("{:<20}  {:>5}  {:>4}  {:>7}", t.token.to_string(), t.public_port, t.tunnel_type, status);
-            }
+    let dir = daemon_dir();
+    if !dir.exists() {
+        println!("[*] no active tunnels");
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = Vec::new();
+    let mut stale = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).context("read daemon dir")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
         }
-        Ok(())
-    })
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let info: DaemonInfo = match serde_json::from_str(&content) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+
+        if is_process_alive(info.pid) {
+            entries.push(info);
+        } else {
+            stale.push(path);
+        }
+    }
+
+    // 清理僵尸记录
+    for path in &stale {
+        std::fs::remove_file(path).ok();
+    }
+
+    if entries.is_empty() {
+        println!("[*] no active tunnels");
+        if !stale.is_empty() {
+            println!("    (cleaned up {} stale entr{})", stale.len(), if stale.len() == 1 { "y" } else { "ies" });
+        }
+        return Ok(());
+    }
+
+    println!("{:>5}  {:>4}  {:>6}  {:>8}", "PORT", "TYPE", "PID", "STATUS");
+    for e in &entries {
+        println!("{:>5}  {:>4}  {:>6}  {:>8}", e.port, e.tunnel_type, e.pid, "alive");
+    }
+
+    if !stale.is_empty() {
+        println!("    (cleaned up {} stale entr{})", stale.len(), if stale.len() == 1 { "y" } else { "ies" });
+    }
+
+    Ok(())
 }
 
 /// 处理 `tcp/udp/http` 命令
