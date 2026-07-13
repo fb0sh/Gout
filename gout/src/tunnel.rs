@@ -114,9 +114,17 @@ impl TunnelSession {
                         gout_api::data_channel::SignalKind::Disconnected => break,
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    println!("[-] closing tunnel...");
-                    break;
+                r = tokio::signal::ctrl_c() => {
+                    match r {
+                        Ok(()) => {
+                            println!("[-] closing tunnel...");
+                            break;
+                        }
+                        Err(_) => {
+                            // 后台模式：无控制终端，ctrl_c() 立即返回 Err
+                            // 忽略，保持运行
+                        }
+                    }
                 }
             }
         }
@@ -164,9 +172,16 @@ impl TunnelSession {
                         Err(_) => break,
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    println!("[-] closing tunnel...");
-                    break;
+                r = tokio::signal::ctrl_c() => {
+                    match r {
+                        Ok(()) => {
+                            println!("[-] closing tunnel...");
+                            break;
+                        }
+                        Err(_) => {
+                            // 后台模式：无控制终端，忽略
+                        }
+                    }
                 }
             }
         }
