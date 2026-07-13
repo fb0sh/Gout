@@ -25,10 +25,10 @@ fn cmd_list() -> Result<()> {
         println!("[*] no active tunnels");
         return Ok(());
     }
-    println!("{:>5}  {:>4}  {:>6}  {:>8}  REMOTE", "PORT", "TYPE", "PID", "STATUS");
+    println!("{:>5}  {:<22}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
     for e in &entries {
         let remote: &str = if e.server.is_empty() { "-" } else { &e.server };
-        println!("{:>5}  {:>4}  {:>6}  {:>8}  {}", e.port, e.tunnel_type, e.pid, "alive", remote);
+        println!("{:>5}  {:<22}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
     }
     Ok(())
 }
