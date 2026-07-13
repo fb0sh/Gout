@@ -22,29 +22,60 @@ pub enum Command {
     Tcp {
         /// 本地端口号
         port: u16,
+        /// 后台运行
+        #[arg(long, short = 'd')]
+        detach: bool,
     },
     /// 创建 UDP 隧道
     Udp {
         /// 本地端口号
         port: u16,
+        /// 后台运行
+        #[arg(long, short = 'd')]
+        detach: bool,
     },
-    /// 创建 HTTP 隧道（v0.1 等价于 TCP）
+    /// 创建 HTTP 隧道（等价于 TCP）
     Http {
         /// 本地端口号
         port: u16,
+        /// 后台运行
+        #[arg(long, short = 'd')]
+        detach: bool,
     },
     /// 列出活跃隧道
     List,
+    /// 停止一个后台隧道
+    Kill {
+        /// 本地端口号
+        port: u16,
+    },
 }
 
 impl Cli {
     pub fn run() -> anyhow::Result<()> {
         let cli = Cli::parse();
+
+        // 子进程模式（由 -d 启动的 daemon），结束后清理 PID 文件
+        if let Some(pidfile) = std::env::var("GOUT_DAEMON_PIDFILE").ok() {
+            let result = match cli.command {
+                Command::Tcp { port, .. } => crate::cmd_tunnel("tcp", port),
+                Command::Udp { port, .. } => crate::cmd_tunnel("udp", port),
+                Command::Http { port, .. } => crate::cmd_tunnel("http", port),
+                _ => anyhow::bail!("daemon mode unsupported for this command"),
+            };
+            std::fs::remove_file(&pidfile).ok();
+            return result;
+        }
+
         match cli.command {
             Command::Login { server, key } => crate::cmd_login(&server, &key),
-            Command::Tcp { port } => crate::cmd_tunnel("tcp", port),
-            Command::Udp { port } => crate::cmd_tunnel("udp", port),
-            Command::Http { port } => crate::cmd_tunnel("http", port),
+            Command::Tcp { port, detach: true } => crate::cmd_start_daemon("tcp", port),
+            Command::Tcp { port, detach: false } => crate::cmd_tunnel("tcp", port),
+            Command::Udp { port, detach: true } => crate::cmd_start_daemon("udp", port),
+            Command::Udp { port, detach: false } => crate::cmd_tunnel("udp", port),
+            Command::Http { port, detach: true } => crate::cmd_start_daemon("http", port),
+            Command::Http { port, detach: false } => crate::cmd_tunnel("http", port),
+            Command::Kill { port } => crate::cmd_kill(port),
             Command::List => crate::cmd_list(),
         }
     }
