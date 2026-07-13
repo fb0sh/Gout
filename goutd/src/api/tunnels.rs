@@ -28,14 +28,7 @@ pub async fn list_tunnels(
         .list_tunnels()
         .await
         .into_iter()
-        .map(|t: TunnelInfo| TunnelListEntry {
-            token: t.token,
-            tunnel_type: t.tunnel_type.as_str().to_string(),
-            public_port: t.public_port,
-            key_name: t.key_name,
-            connected: t.connected,
-            pending_count: t.pending_count,
-        })
+        .map(|t: TunnelInfo| t.to_list_entry())
         .collect();
     (StatusCode::OK, Json(ApiResponse::ok(tunnels))).into_response()
 }

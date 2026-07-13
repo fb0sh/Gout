@@ -277,6 +277,11 @@ impl TunnelManager {
             .map(|t| t.tunnel_type)
     }
 
+    /// 查询隧道是否已建立数据通道连接
+    pub async fn is_connected(&self, token: Token) -> Option<bool> {
+        self.tunnels.read().await.get(&token).map(|t| t.connected)
+    }
+
     /// 标记隧道为已连接（UDP 数据通道建立时调用）。
     pub async fn mark_connected(&self, token: Token) -> Result<(), String> {
         let mut tunnels = self.tunnels.write().await;
@@ -361,6 +366,19 @@ pub struct TunnelInfo {
     pub key_name: String,
     pub connected: bool,
     pub pending_count: usize,
+}
+
+impl TunnelInfo {
+    pub fn to_list_entry(&self) -> gout_api::TunnelListEntry {
+        gout_api::TunnelListEntry {
+            token: self.token,
+            tunnel_type: self.tunnel_type.as_str().to_string(),
+            public_port: self.public_port,
+            key_name: self.key_name.clone(),
+            connected: self.connected,
+            pending_count: self.pending_count,
+        }
+    }
 }
 
 #[cfg(test)]

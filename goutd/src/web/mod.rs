@@ -6,6 +6,7 @@ use axum::{extract::State, response::{Html, IntoResponse}};
 use super::api::tunnels::AppState;
 use crate::store::KeyEntry;
 use crate::tunnel::TunnelInfo;
+use gout_api::TunnelListEntry;
 
 pub(crate) mod auth;
 
@@ -13,7 +14,7 @@ pub(crate) mod auth;
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     active_page: &'static str,
-    tunnels: Vec<TunnelViewModel>,
+    tunnels: Vec<TunnelListEntry>,
 }
 
 #[derive(Template)]
@@ -28,15 +29,6 @@ struct KeysTemplate {
 #[template(path = "login.html")]
 struct LoginTemplate {
     error: Option<String>,
-}
-
-struct TunnelViewModel {
-    token: u64,
-    tunnel_type: String,
-    public_port: u16,
-    key_name: String,
-    connected: bool,
-    pending_count: usize,
 }
 
 struct KeyViewModel {
@@ -84,19 +76,12 @@ pub async fn logout() -> impl axum::response::IntoResponse {
 pub async fn dashboard(
     State(state): State<AppState>,
 ) -> Result<Html<String>, (axum::http::StatusCode, String)> {
-    let tunnels: Vec<TunnelViewModel> = state
+    let tunnels: Vec<TunnelListEntry> = state
         .tunnel_mgr
         .list_tunnels()
         .await
         .into_iter()
-        .map(|t: TunnelInfo| TunnelViewModel {
-            token: t.token,
-            tunnel_type: t.tunnel_type.as_str().to_string(),
-            public_port: t.public_port,
-            key_name: t.key_name,
-            connected: t.connected,
-            pending_count: t.pending_count,
-        })
+        .map(|t: TunnelInfo| t.to_list_entry())
         .collect();
 
     let tmpl = DashboardTemplate {

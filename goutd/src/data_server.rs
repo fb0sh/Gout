@@ -68,46 +68,56 @@ impl DataServer {
         token: u64,
         mgr: Arc<tunnel::TunnelManager>,
     ) -> Result<()> {
-        match mgr.register_signal_channel(token).await {
-            Ok(mut signal_rx) => {
-                // 信号通道
-                gout_api::data_channel::server_accept(&mut stream).await?;
-                info!("signal channel established for tunnel {}", token);
+        // 显式查询隧道状态，决定当前连接的角色
+        match mgr.is_connected(token).await {
+            // 尚未连接 → 这条连接成为信号通道
+            Some(false) => {
+                match mgr.register_signal_channel(token).await {
+                    Ok(mut signal_rx) => {
+                        gout_api::data_channel::server_accept(&mut stream).await?;
+                        info!("signal channel established for tunnel {}", token);
 
-                let (mut reader, mut writer) = stream.split();
-                let mut buf = [0u8; 1];
+                        let (mut reader, mut writer) = stream.split();
+                        let mut buf = [0u8; 1];
 
-                loop {
-                    tokio::select! {
-                        msg = signal_rx.recv() => {
-                            match msg {
-                                Some(tunnel::SignalMsg::NewExternalConnection) => {
-                                    if let Err(e) = gout_api::data_channel::send_notification(&mut writer).await {
-                                        warn!("notify client failed: {e}");
-                                        break;
+                        loop {
+                            tokio::select! {
+                                msg = signal_rx.recv() => {
+                                    match msg {
+                                        Some(tunnel::SignalMsg::NewExternalConnection) => {
+                                            if let Err(e) = gout_api::data_channel::send_notification(&mut writer).await {
+                                                warn!("notify client failed: {e}");
+                                                break;
+                                            }
+                                        }
+                                        Some(tunnel::SignalMsg::Shutdown) | None => break,
                                     }
                                 }
-                                Some(tunnel::SignalMsg::Shutdown) | None => break,
-                            }
-                        }
-                        r = reader.read(&mut buf) => {
-                            match r {
-                                Ok(0) | Err(_) => {
-                                    info!("signal channel closed for tunnel {}", token);
-                                    break;
+                                r = reader.read(&mut buf) => {
+                                    match r {
+                                        Ok(0) | Err(_) => {
+                                            info!("signal channel closed for tunnel {}", token);
+                                            break;
+                                        }
+                                        Ok(_) => {}
+                                    }
                                 }
-                                Ok(_) => {}
                             }
                         }
+
+                        mgr.close_tunnel(token).await.ok();
+                        info!("tunnel {} closed", token);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // 注册失败（如隧道被并发关闭），拒绝连接
+                        gout_api::data_channel::server_reject(&mut stream, &e).await?;
+                        Ok(())
                     }
                 }
-
-                mgr.close_tunnel(token).await.ok();
-                info!("tunnel {} closed", token);
-                Ok(())
             }
-            Err(_) => {
-                // 数据通道
+            // 已有信号通道 → 这条连接成为数据通道
+            Some(true) => {
                 match mgr.take_pending_conn(token).await {
                     Ok(ext_stream) => {
                         gout_api::data_channel::server_accept(&mut stream).await?;
@@ -120,6 +130,11 @@ impl DataServer {
                         Ok(())
                     }
                 }
+            }
+            // 隧道不存在
+            None => {
+                gout_api::data_channel::server_reject(&mut stream, "unknown tunnel").await?;
+                Ok(())
             }
         }
     }
