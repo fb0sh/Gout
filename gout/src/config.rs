@@ -70,11 +70,12 @@ pub fn read() -> Result<Config> {
     let content = std::fs::read_to_string(&path).context("read config")?;
     let cfg: Config = toml::from_str(&content).context("parse config")?;
 
-    // 如果读的是旧位置，静默迁移到新位置
+    // 如果读的是旧位置，安全迁移到新位置
     let new_path = gout_dir().join("config.toml");
     if path != new_path {
-        std::fs::create_dir_all(gout_dir()).ok();
-        std::fs::write(&new_path, &content).ok();
+        std::fs::create_dir_all(gout_dir()).context("create ~/.gout for migration")?;
+        // 先写新文件，确认成功后再删旧文件，避免写失败时丢数据
+        std::fs::write(&new_path, &content).context("migrate config to ~/.gout/config.toml")?;
         std::fs::remove_file(&path).ok();
     }
 
