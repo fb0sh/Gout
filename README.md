@@ -54,7 +54,7 @@ cargo build -p goutd -p gout
 
 Rust SDK（在 `Cargo.toml` 中添加）：
 ```toml
-gout-api = "0.2"
+gout-api = "0.3"
 ```
 
 ## 快速开始
