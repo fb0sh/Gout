@@ -67,16 +67,23 @@ gout-api = "0.3"
 ```bash
 # 在公网 VPS 上运行
 goutd
+```
 
-# 输出:
-# ──────────────────────────────────────────
-#   Initial admin key: sk-xxxxxxxxxxxx
-#   Save this key! It won't be shown again.
-# ──────────────────────────────────────────
-# system ephemeral port range: 32768-60999
-# tunnel port range: 10000-32767 (22768 ports)
-# HTTP server listening on http://127.0.0.1:8080
-# Data server listening on 0.0.0.0:8081
+输出：
+
+```
+2026-07-13T04:47:52.890Z  INFO  goutd: tunnel port range: 10000-32767 (22768 ports)
+2026-07-13T04:47:52.891Z  INFO  goutd: HTTP server listening on http://127.0.0.1:8080
+2026-07-13T04:47:52.891Z  INFO  goutd: Data server listening on 0.0.0.0:8081
+```
+
+首次启动还会生成管理 key：
+
+```
+──────────────────────────────────────────
+  Admin API Key: sk-xxxxxxxxxxxx
+  Save this key! It won't be shown again.
+──────────────────────────────────────────
 ```
 
 Web 面板默认只监听 `127.0.0.1`，通过 SSH 端口转发访问：
@@ -93,29 +100,42 @@ ssh -L 8080:localhost:8080 your-server
 gout login server.example.com:8080 sk-xxxxxxxxxxxx
 
 # 前台运行（Ctrl+C 关闭）
-gout tcp 4000        # 将本地 localhost:4000 暴露到公网
+gout tcp 4000
+[+] tcp tunnel: 127.0.0.1:4000 -> 127.0.0.1:10001
+[+] signal channel established, waiting for connections...
+    Ctrl+C to close tunnel
+```
 
-# 后台运行
-gout tcp 8080 -d     # -d 放入后台
-  [+] tunnel started in background (PID: 87654)
-      `gout list` to check status
-      `gout log 8080` to view logs
-      `gout kill 8080` to stop
+后台运行：
 
-# 管理后台隧道
-gout list             # 显示本地运行中的隧道
-  PORT  TYPE     PID    STATUS
-  8080   tcp   87654    alive
+```bash
+gout tcp 8080 -d
+[+] tcp tunnel: 127.0.0.1:8080 -> 127.0.0.1:10002
+[+] tunnel started in background (PID: 87654)
+    `gout list` to check status
+    `gout log 8080` to view logs
+    `gout kill 8080` to stop
+```
 
-gout log 8080         # 查看日志
-gout log 8080 -f      # 实时跟踪（Unix）
+管理后台隧道：
 
-gout kill 8080        # 停止隧道
-  [-] tunnel on port 8080 (PID 87654) stopped
+```bash
+gout list
+ PORT  REMOTE                      TYPE     PID    STATUS
+ 8080  127.0.0.1:10002             tcp    87654     alive
 
-# UDP / HTTP 隧道
-gout udp 53           # UDP 隧道（DNS 等）
-gout http 8080        # HTTP 隧道，显示 http:// URL
+gout log 8080          # 查看日志
+gout log 8080 -f       # 实时跟踪（Unix）
+
+gout kill 8080
+[+] tunnel on port 8080 (PID 87654) stopped
+```
+
+UDP / HTTP 隧道：
+
+```bash
+gout udp 53            # UDP 隧道（DNS 等）
+gout http 8080         # HTTP 隧道，显示 http:// URL
 ```
 
 ## 配置文件
@@ -363,6 +383,85 @@ data_channel::pipe_bidirectional(a, b).await;
 ```
 
 ---
+
+## CLI 参考
+
+### gout
+
+```
+轻量内网穿透工具
+
+Usage: gout <COMMAND>
+
+Commands:
+  login  登录远程服务器，保存凭据
+  tcp    创建 TCP 隧道
+  udp    创建 UDP 隧道
+  http   创建 HTTP 隧道（等价于 TCP）
+  list   列出本地后台隧道
+  log    查看后台隧道日志
+  kill   停止后台隧道
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+```
+# 子命令帮助示例
+$ gout tcp --help
+创建 TCP 隧道
+
+Usage: gout tcp [OPTIONS] <PORT>
+
+Arguments:
+  <PORT>  本地端口号
+
+Options:
+  -d, --detach  后台运行
+  -h, --help    Print help
+
+$ gout log --help
+查看后台隧道日志
+
+Usage: gout log [OPTIONS] <PORT>
+
+Arguments:
+  <PORT>  本地端口号
+
+Options:
+  -f, --follow  持续跟随（类似 tail -f）
+  -h, --help    Print help
+
+$ gout kill --help
+停止后台隧道
+
+Usage: gout kill <PORT>
+
+Arguments:
+  <PORT>  本地端口号
+
+Options:
+  -h, --help  Print help
+```
+
+### goutd
+
+```
+Gout 服务端守护进程
+
+Usage: goutd [OPTIONS]
+
+Options:
+      --http-addr <HTTP_ADDR>    HTTP / Web 面板监听地址 [default: 127.0.0.1:8080]
+      --data-addr <DATA_ADDR>    数据通道监听地址 [default: 0.0.0.0:8081]
+      --port-start <PORT_START>  公网端口范围起始（默认 10000，避开系统临时端口范围） [default: 10000]
+      --port-end <PORT_END>      公网端口范围结束（默认 32767，Linux 临时端口默认从 32768 开始） [default: 32767]
+      --data-dir <DATA_DIR>      数据存储目录（keys.toml 存放位置） [default: ./gout-data]
+  -h, --help                     Print help
+  -V, --version                  Print version
+```
 
 ## 开发
 
