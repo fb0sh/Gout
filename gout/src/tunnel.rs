@@ -15,6 +15,16 @@ pub struct TunnelSession {
     config: crate::config::Config,
 }
 
+/// 返回一个 future：前台等待 Ctrl+C，后台永不 resolve。
+async fn ctrl_c_signal() {
+    if std::env::var("GOUT_DAEMON_PIDFILE").is_ok() {
+        // 后台模式：没有控制终端，永不触发
+        std::future::pending().await
+    } else {
+        tokio::signal::ctrl_c().await.ok();
+    }
+}
+
 impl TunnelSession {
     /// 通过 REST API 创建隧道，建立信号通道。
     ///
@@ -114,17 +124,9 @@ impl TunnelSession {
                         gout_api::data_channel::SignalKind::Disconnected => break,
                     }
                 }
-                r = tokio::signal::ctrl_c() => {
-                    match r {
-                        Ok(()) => {
-                            println!("[-] closing tunnel...");
-                            break;
-                        }
-                        Err(_) => {
-                            // 后台模式：无控制终端，ctrl_c() 立即返回 Err
-                            // 忽略，保持运行
-                        }
-                    }
+                _ = ctrl_c_signal() => {
+                    println!("[-] closing tunnel...");
+                    break;
                 }
             }
         }
@@ -172,16 +174,9 @@ impl TunnelSession {
                         Err(_) => break,
                     }
                 }
-                r = tokio::signal::ctrl_c() => {
-                    match r {
-                        Ok(()) => {
-                            println!("[-] closing tunnel...");
-                            break;
-                        }
-                        Err(_) => {
-                            // 后台模式：无控制终端，忽略
-                        }
-                    }
+                _ = ctrl_c_signal() => {
+                    println!("[-] closing tunnel...");
+                    break;
                 }
             }
         }
