@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// 登录远程服务器，保存凭据到 ~/.goutrc
+    /// 登录远程服务器，保存凭据
     Login {
         /// 服务器地址，如 `server.example.com:8080`
         server: String,
@@ -42,9 +42,17 @@ pub enum Command {
         #[arg(long, short = 'd')]
         detach: bool,
     },
-    /// 列出活跃隧道
+    /// 列出本地后台隧道
     List,
-    /// 停止一个后台隧道
+    /// 查看后台隧道日志
+    Log {
+        /// 本地端口号
+        port: u16,
+        /// 持续跟随（类似 tail -f）
+        #[arg(long, short = 'f')]
+        follow: bool,
+    },
+    /// 停止后台隧道
     Kill {
         /// 本地端口号
         port: u16,
@@ -75,6 +83,7 @@ impl Cli {
             Command::Udp { port, detach: false } => crate::cmd_tunnel("udp", port),
             Command::Http { port, detach: true } => crate::cmd_start_daemon("http", port),
             Command::Http { port, detach: false } => crate::cmd_tunnel("http", port),
+            Command::Log { port, follow } => crate::cmd_log(port, follow),
             Command::Kill { port } => crate::cmd_kill(port),
             Command::List => crate::cmd_list(),
         }

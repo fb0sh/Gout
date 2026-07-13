@@ -107,6 +107,10 @@ fn daemon_pidfile(port: u16) -> PathBuf {
     daemon_dir().join(format!("{port}.json"))
 }
 
+fn daemon_logfile(port: u16) -> PathBuf {
+    daemon_dir().join(format!("{port}.log"))
+}
+
 /// 检查进程是否存活
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
@@ -167,13 +171,16 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16) -> Result<()> {
         std::fs::remove_file(&pidfile)?;
     }
 
-    // 启动子进程（不带 -d，静默运行）
+    // 启动子进程（不带 -d，静默运行，输出到日志文件）
+    let logfile = daemon_logfile(port);
+    let log_handle = std::fs::File::create(&logfile).context("create log file")?;
+
     let child = std::process::Command::new(&exe)
         .args([tunnel_type, &port.to_string()])
         .env("GOUT_DAEMON_PIDFILE", pidfile.to_str().unwrap())
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(log_handle.try_clone().context("clone log handle")?)
+        .stderr(log_handle)
         .spawn()
         .context("failed to spawn daemon")?;
 
@@ -186,7 +193,45 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16) -> Result<()> {
 
     println!("[+] tunnel started in background (PID: {})", child.id());
     println!("    `gout list` to check status");
+    println!("    `gout log {port}` to view logs");
     println!("    `gout kill {port}` to stop");
+    Ok(())
+}
+
+/// 处理 `log` 命令：查看后台隧道日志
+fn cmd_log(port: u16, follow: bool) -> Result<()> {
+    let logfile = daemon_logfile(port);
+
+    if !logfile.exists() {
+        anyhow::bail!("no log file found for port {port} (tunnel not started or nothing logged yet)");
+    }
+
+    if follow {
+        // 用 tail -f（Unix）或 type + 轮询（Windows fallback）
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("tail")
+                .args(["-f", &logfile.to_string_lossy()])
+                .status()
+                .context("tail failed")?;
+            if !status.success() {
+                anyhow::bail!("tail exited with {}", status);
+            }
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows fallback: just cat the file once
+            let content = std::fs::read_to_string(&logfile)?;
+            print!("{content}");
+            println!("[!] follow mode (-f) not supported on Windows; showing current logs");
+            return Ok(());
+        }
+    }
+
+    // 只打印当前内容
+    let content = std::fs::read_to_string(&logfile)?;
+    print!("{content}");
     Ok(())
 }
 
