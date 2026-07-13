@@ -13,6 +13,9 @@
 - **Web 管理面板**：在浏览器中管理 API key、查看活跃隧道、添加备注
 - **REST 控制面**：隧道通过 HTTP API 创建和销毁，不依赖配置文件热加载
 - **多协议支持**：TCP、UDP 和 HTTP（HTTP 当前等价于 TCP）
+- **后台运行**：`gout tcp 4000 -d` 将隧道放入后台，`gout kill 4000` 停止
+- **日志查看**：`gout log 4000` 查看后台日志，`gout log 4000 -f` 实时跟踪
+- **本地列表**：`gout list` 显示本机所有运行中的后台隧道
 - **信号通道架构**：TCP 隧道每条一个信号通道 + 每条外部连接一个独立数据通道
 - **UDP 隧道**：一条持久数据通道承载帧封装的数据报，双向转发
 - **Token 认证**：每个隧道分配一个随机 64 位 token，用于数据通道身份验证
@@ -29,7 +32,7 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 
 项目是一个 Cargo workspace，包含三个 crate：
 - **gout-api** — Rust SDK：协议类型、`GoutClient`（隧道操作）、`GoutAdminClient`（管理操作）、`data_channel`（握手/pipe）
-- **gout** — CLI 客户端：login/tcp/udp/http 子命令；读取 `~/.goutrc`
+- **gout** — CLI 客户端：login/tcp/udp/http 子命令 + 后台管理（list/kill/log）；配置存储在 `~/.gout/config.toml`
 - **goutd** — 服务端守护进程：axum HTTP 服务器 + tokio 数据通道 TCP 服务器
 
 ## 安装
@@ -88,9 +91,53 @@ ssh -L 8080:localhost:8080 your-server
 ```bash
 # 通过 Web 面板创建普通 API key，然后：
 gout login server.example.com:8080 sk-xxxxxxxxxxxx
+
+# 前台运行（Ctrl+C 关闭）
 gout tcp 4000        # 将本地 localhost:4000 暴露到公网
-gout udp 53          # UDP 隧道（DNS 等）
-gout http 8080       # HTTP 隧道，URL 格式提示
+
+# 后台运行
+gout tcp 8080 -d     # -d 放入后台
+  [+] tunnel started in background (PID: 87654)
+      `gout list` to check status
+      `gout log 8080` to view logs
+      `gout kill 8080` to stop
+
+# 管理后台隧道
+gout list             # 显示本地运行中的隧道
+  PORT  TYPE     PID    STATUS
+  8080   tcp   87654    alive
+
+gout log 8080         # 查看日志
+gout log 8080 -f      # 实时跟踪（Unix）
+
+gout kill 8080        # 停止隧道
+  [-] tunnel on port 8080 (PID 87654) stopped
+
+# UDP / HTTP 隧道
+gout udp 53           # UDP 隧道（DNS 等）
+gout http 8080        # HTTP 隧道，显示 http:// URL
+```
+
+## 配置文件
+
+客户端凭据存储在 `~/.gout/config.toml`（旧 `~/.goutrc` 自动迁移）：
+
+```toml
+[server]
+addr = "server.example.com:8080"
+api_key = "sk-xxxxxxxxxxxx"
+```
+
+后台隧道状态存储在 `~/.gout/daemon/`：
+
+```
+~/.gout/
+├── config.toml       ← 登录凭据
+└── daemon/
+    ├── 8080.json     ← PID 文件
+    ├── 8080.log      ← 日志
+    ├── 53.json
+    └── 53.log
 ```
 
 ---
