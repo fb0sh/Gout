@@ -165,6 +165,23 @@ pub fn resolve(name: Option<&str>) -> Result<ServerConfig> {
         .context(format!("server {key:?} not found"))
 }
 
+/// 删除一个 server
+pub fn remove(name: &str) -> Result<()> {
+    let mut cfg = read()?;
+    if !cfg.servers.contains_key(name) {
+        anyhow::bail!("server {name:?} not found");
+    }
+    cfg.servers.remove(name);
+    // 如果删的是默认 server，将 default 指向剩下的第一个
+    if cfg.default_server == name {
+        cfg.default_server = cfg.servers.keys().next().cloned().unwrap_or_default();
+    }
+    let content = toml::to_string_pretty(&cfg)?;
+    let new_path = gout_dir().join("config.toml");
+    std::fs::write(&new_path, &content).context("write config")?;
+    Ok(())
+}
+
 /// 设置默认 server
 pub fn set_default(name: &str) -> Result<()> {
     let mut cfg = read().unwrap_or_else(|_| Config {

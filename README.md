@@ -9,8 +9,8 @@
 
 ## 特点
 
-- **零配置客户端**：`gout login <name> <addr> <key>` → `gout tcp 4000`，无需手写配置文件
-- **多 Server 支持**：`gout login prod <addr> <key>`，`gout tcp 4444 -s prod`，`gout default <name>` 切换默认
+- **零配置客户端**：`gout server set <name> <addr> <key>` → `gout tcp 4000`，无需手写配置文件
+- **多 Server 支持**：`gout server set prod <addr> <key>`，`gout tcp 4444 -s prod`，`gout server default <name>` 切换默认
 - **Web 管理面板**：在浏览器中管理 API key、查看活跃隧道、添加备注
 - **REST 控制面**：隧道通过 HTTP API 创建和销毁，不依赖配置文件热加载
 - **多协议支持**：TCP、UDP 和 HTTP（HTTP 当前等价于 TCP）
@@ -33,7 +33,7 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 
 项目是一个 Cargo workspace，包含三个 crate：
 - **gout-api** — Rust SDK：协议类型、`GoutClient`（隧道操作）、`GoutAdminClient`（管理操作）、`data_channel`（握手/pipe）
-- **gout** — CLI 客户端：login/tcp/udp/http 子命令 + 后台管理（list/kill/log/show/default）；配置存储在 `~/.gout/config.toml`
+- **gout** — CLI 客户端：tcp/udp/http 子命令 + server/tunnel 管理（ls/log/kill/server）；配置存储在 `~/.gout/config.toml`
 - **goutd** — 服务端守护进程：axum HTTP 服务器 + tokio 数据通道 TCP 服务器
 
 ## 安装
@@ -97,8 +97,9 @@ ssh -L 8080:localhost:8080 your-server
 ### 客户端
 
 ```bash
-# 登录 server（支持多 server）
-gout login prod prod.example.com:8080 sk-xxxxxxxxxxxx
+# 添加 server
+$ gout server set prod prod.example.com:8080 sk-xxxxxxxxxxxx
+[+] server "prod" (prod.example.com:8080) saved
 
 # 前台运行
 gout tcp 4000
@@ -108,9 +109,9 @@ gout tcp 4000
 
 # 后台运行
 gout tcp 8080 -d
-[+] tcp tunnel: http://127.0.0.1:8080 -> http://prod.example.com:10002
+[+] tcp tunnel: 127.0.0.1:8080 -> prod.example.com:10002
 [+] tunnel started in background (PID: 87654)
-    `gout list` to check status
+    `gout ls` to check status
     `gout log 8080` to view logs
     `gout kill 8080` to stop
 
@@ -119,13 +120,12 @@ gout tcp 8080 -s dev         # 用 dev server
 gout tcp 8080 -s prod        # 用 prod server
 
 # 管理后台隧道
-gout list
-prod (prod.example.com:8080)
-  PORT  REMOTE                         TYPE     PID    STATUS
-  8080  prod.example.com:10002         tcp    87654     alive
+gout ls
+  prod  prod.example.com:8080
+    8080  prod.example.com:10002         tcp    87654
 
-dev (dev.example.com:8080)
-  (no active tunnels)
+  dev  dev.example.com:8080
+    (no active tunnels)
 
 gout log 8080          # 查看日志
 gout log 8080 -f       # 实时跟踪（Unix）
@@ -133,20 +133,16 @@ gout log 8080 -f       # 实时跟踪（Unix）
 gout kill 8080
 [+] tunnel on port 8080 (PID 87654) stopped
 
-# 查看所有 server + 隧道
-gout show
-prod (prod.example.com:8080)
-  PORT  REMOTE                         TYPE     PID    STATUS
-  8080  prod.example.com:10002         tcp    87654     alive
+# 管理 server
+gout server show
+  prod  prod.example.com:8080
+  dev   dev.example.com:8080  ← default
 
-dev (dev.example.com:8080)
-  (no active tunnels)
+  `gout server default <name>` to change
+  `gout server unset <name>` to remove
 
-(use `gout default <name>` to change default)
-
-# 设置默认 server
-gout default dev
-# 之后不加 -s 时走 dev
+gout server default dev
+gout server unset old-server
 
 gout udp 53            # UDP 隧道（DNS 等）
 gout http 8080         # HTTP 隧道，显示 http:// URL
@@ -414,13 +410,14 @@ data_channel::pipe_bidirectional(a, b).await;
 Usage: gout <COMMAND>
 
 Commands:
-  login  登录远程服务器，保存凭据
+  login  登录远程服务器（等价于 `server set`）
   tcp    创建 TCP 隧道
   udp    创建 UDP 隧道
   http   创建 HTTP 隧道（等价于 TCP）
-  list   列出本地后台隧道
+  ls     列出本地后台隧道（按 server 分组）
   log    查看后台隧道日志
   kill   停止后台隧道
+  server 管理 server（set / default / unset / show）
   help   Print this message or the help of the given subcommand(s)
 
 Options:
@@ -442,6 +439,39 @@ Options:
   -d, --detach          后台运行
   -s, --server <SERVER>  服务器名称或地址（默认使用配置中的 default_server）
   -h, --help            Print help
+
+$ gout ls --help
+列出本地后台隧道（按 server 分组）。
+也支持 `gout list`。
+
+Usage: gout list
+
+Options:
+  -h, --help  Print help
+
+$ gout server --help
+管理 server
+
+Usage: gout server <COMMAND>
+
+Commands:
+  set     添加或更新 server
+  default 设置默认 server
+  unset   删除 server
+  show    显示所有 server
+
+$ gout server set --help
+添加或更新 server
+
+Usage: gout server set <NAME> <HOST> <KEY>
+
+Arguments:
+  <NAME>  server 名称
+  <HOST>  server 地址，如 `server.example.com:8080`
+  <KEY>   API key
+
+Options:
+  -h, --help  Print help
 
 $ gout log --help
 查看后台隧道日志

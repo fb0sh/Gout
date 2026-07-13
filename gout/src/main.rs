@@ -3,8 +3,6 @@ mod config;
 mod daemon;
 mod tunnel;
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
@@ -12,15 +10,45 @@ fn main() -> Result<()> {
     cli::Cli::run()
 }
 
-// ━━━ Login ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━ Server 管理 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_login(name: &str, server: &str, key: &str) -> Result<()> {
-    config::write(name, server, key)?;
-    println!("[+] saved server {name:?} ({server}) to ~/.gout/config.toml");
+fn cmd_server_set(name: &str, host: &str, key: &str) -> Result<()> {
+    config::write(name, host, key)?;
+    println!("[+] server {name:?} ({host}) saved");
     Ok(())
 }
 
-// ━━━ List（按 server 分组展示） ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fn cmd_server_default(name: &str) -> Result<()> {
+    config::set_default(name)?;
+    println!("[+] default server set to {name:?}");
+    Ok(())
+}
+
+fn cmd_server_unset(name: &str) -> Result<()> {
+    config::remove(name)?;
+    println!("[-] server {name:?} removed");
+    Ok(())
+}
+
+fn cmd_server_show() -> Result<()> {
+    let servers = config::list_servers().unwrap_or_default();
+    if servers.is_empty() {
+        println!("[*] no servers configured");
+        println!("    use `gout server set <name> <host> <key>`");
+        return Ok(());
+    }
+    for (name, sc, is_default) in &servers {
+        let def = if *is_default { "  ← default" } else { "" };
+        println!("  {name}{def}");
+        println!("         {}{}", sc.addr, if !is_default { "" } else { "" });
+    }
+    println!();
+    println!("  `gout server default <name>` to change");
+    println!("  `gout server unset <name>` to remove");
+    Ok(())
+}
+
+// ━━━ Tunnel list（按 server 分组） ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn cmd_list() -> Result<()> {
     let servers = config::list_servers().unwrap_or_default();
@@ -40,17 +68,16 @@ fn cmd_list() -> Result<()> {
             .collect();
         sv_entries.sort_by_key(|e| e.port);
 
-        println!("{name}  ({})", sc.addr);
+        println!("  {name}  {}", sc.addr);
         if sv_entries.is_empty() {
-            println!("  (no active tunnels)\n");
+            println!("    (no active tunnels)");
         } else {
-            println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
             for e in &sv_entries {
                 let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
-                println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+                println!("    {:>5}  {:<26}  {:>4}  {:>6}", e.port, remote, e.tunnel_type, e.pid);
             }
-            println!();
         }
+        println!();
     }
 
     // 未匹配到任何 server 的孤立隧道
@@ -62,11 +89,10 @@ fn cmd_list() -> Result<()> {
         }))
         .collect();
     if !unmatched.is_empty() {
-        println!("(other)");
-        println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
+        println!("  (other)");
         for e in &unmatched {
             let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
-            println!("  {:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+            println!("    {:>5}  {:<26}  {:>4}  {:>6}", e.port, remote, e.tunnel_type, e.pid);
         }
         println!();
     }
@@ -74,23 +100,11 @@ fn cmd_list() -> Result<()> {
     Ok(())
 }
 
-// ━━━ Show（server + tunnel 概览） ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━ Tunnel 命令 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_show() -> Result<()> {
-    cmd_list()?;
-    let servers = config::list_servers().unwrap_or_default();
-    if !servers.is_empty() {
-        println!("(use `gout default <name>` to change default)");
-    }
-    Ok(())
-}
-
-// ━━━ Tunnel 命令 / 辅助 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// 解析 server 参数，返回 ServerConfig
 fn resolve_server(server: Option<&str>) -> Result<config::ServerConfig> {
     config::resolve(server).context(
-        "no server configured. Run `gout login <name> <addr> <key>` first.",
+        "no server configured. Use `gout server set <name> <host> <key>` first.",
     )
 }
 
@@ -110,7 +124,6 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
     let tt = gout_api::TunnelType::parse(tunnel_type);
     let server_host = sc.addr.split(':').next().unwrap_or(&sc.addr);
 
-    // 父进程先通过 REST API 创建隧道
     let rt = tokio::runtime::Runtime::new()?;
     let (token, data_port, public_port) = rt.block_on(async {
         let gout = gout_api::client::GoutClient::new(&sc.addr, &sc.api_key);
@@ -118,7 +131,6 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
         anyhow::Ok((tun.token, tun.data_port, tun.public_port))
     })?;
 
-    // 显示映射
     let local_url = if tt == gout_api::TunnelType::Http {
         format!("http://127.0.0.1:{port}")
     } else {
@@ -131,11 +143,10 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
     };
     println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
 
-    // 启动子进程
     let mgr = daemon::DaemonManager::new();
     let pid = mgr.start_with_tunnel(tunnel_type, port, token, data_port, public_port, server_host)?;
     println!("[+] tunnel started in background (PID: {pid})");
-    println!("    `gout list` to check status");
+    println!("    `gout ls` to check status");
     println!("    `gout log {port}` to view logs");
     println!("    `gout kill {port}` to stop");
     Ok(())
@@ -154,10 +165,4 @@ fn cmd_log(port: u16, follow: bool) -> Result<()> {
 
 fn cmd_kill(port: u16) -> Result<()> {
     daemon::DaemonManager::new().kill(port)
-}
-
-fn cmd_set_default(name: &str) -> Result<()> {
-    config::set_default(name)?;
-    println!("[+] default server set to {name:?}");
-    Ok(())
 }

@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// 登录远程服务器，保存凭据
+    /// 登录远程服务器（等价于 `server set`）
     Login {
         /// 服务器名称（可选，默认按地址自动生成）
         name: Option<String>,
@@ -53,7 +53,8 @@ pub enum Command {
         #[arg(long, short = 's')]
         server: Option<String>,
     },
-    /// 列出本地后台隧道
+    /// 列出本地后台隧道（按 server 分组）
+    #[clap(alias = "ls")]
     List,
     /// 查看后台隧道日志
     Log {
@@ -68,12 +69,33 @@ pub enum Command {
         /// 本地端口号
         port: u16,
     },
+    /// 管理 server
+    #[command(subcommand)]
+    Server(ServerCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServerCmd {
+    /// 添加或更新 server
+    Set {
+        /// server 名称
+        name: String,
+        /// server 地址，如 `server.example.com:8080`
+        host: String,
+        /// API key
+        key: String,
+    },
     /// 设置默认 server
     Default {
         /// server 名称
         name: String,
     },
-    /// 显示已保存的 server 列表和状态
+    /// 删除 server
+    Unset {
+        /// server 名称
+        name: String,
+    },
+    /// 显示所有 server
     Show,
 }
 
@@ -98,7 +120,7 @@ impl Cli {
                 let n = name.unwrap_or_else(|| {
                     server.split(':').next().unwrap_or(&server).to_string()
                 });
-                crate::cmd_login(&n, &server, &key)
+                crate::cmd_server_set(&n, &server, &key)
             }
             Command::Tcp { port, detach: true, server } => crate::cmd_start_daemon("tcp", port, server.as_deref()),
             Command::Tcp { port, detach: false, server } => crate::cmd_tunnel("tcp", port, server.as_deref()),
@@ -109,8 +131,12 @@ impl Cli {
             Command::Log { port, follow } => crate::cmd_log(port, follow),
             Command::Kill { port } => crate::cmd_kill(port),
             Command::List => crate::cmd_list(),
-            Command::Default { name } => crate::cmd_set_default(&name),
-            Command::Show => crate::cmd_show(),
+            Command::Server(cmd) => match cmd {
+                ServerCmd::Set { name, host, key } => crate::cmd_server_set(&name, &host, &key),
+                ServerCmd::Default { name } => crate::cmd_server_default(&name),
+                ServerCmd::Unset { name } => crate::cmd_server_unset(&name),
+                ServerCmd::Show => crate::cmd_server_show(),
+            },
         }
     }
 }
