@@ -12,7 +12,7 @@ name = "goutd"
 path = "src/main.rs"
 
 [dependencies]
-gout-api = { path = "../gout-api", version = "0.3.0" }
+gout-api = { path = "../gout-api", version = "0.3.1" }
 tokio = { version = "1", features = ["full"] }
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
