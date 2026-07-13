@@ -20,7 +20,7 @@
 - **信号通道架构**：TCP 隧道每条一个信号通道 + 每条外部连接一个独立数据通道
 - **UDP 隧道**：一条持久数据通道承载帧封装的数据报，双向转发
 - **Token 认证**：每个隧道分配一个随机 64 位 token，用于数据通道身份验证
-- **端口池管理**：基于空闲池的端口分配，默认可用 22,768 个端口，自动避开系统临时端口
+- **端口分配**：游标扫描 + 操作系统 bind() 确认，AddrInUse 自动换端口，默认可用 22,768 个端口
 - **自动清理**：客户端 30 秒内未完成数据通道握手时隧道自动过期；控制连接断开时全部清理
 
 ## 架构
@@ -496,24 +496,30 @@ Arguments:
 Options:
   -h, --help  Print help
 
-$ gout show --help
-显示已保存的 server 列表和状态
+$ gout server --help
+管理 server
 
-Usage: gout show
+Usage: gout server <COMMAND>
 
-Options:
-  -h, --help  Print help
+Commands:
+  set     添加或更新 server
+  default 设置默认 server
+  unset   删除 server
+  show    显示所有 server
 
-$ gout default --help
-设置默认 server
+$ gout server set --help
+添加或更新 server
 
-Usage: gout default <NAME>
+Usage: gout server set <NAME> <HOST> <KEY>
 
 Arguments:
   <NAME>  server 名称
+  <HOST>  server 地址，如 `server.example.com:8080`
+  <KEY>   API key
 
 Options:
   -h, --help  Print help
+
 ```
 
 ### goutd
