@@ -37,7 +37,19 @@ impl TunnelSession {
             // 正常模式：通过 REST API 创建
             let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
             let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
-            // 父进程（-d 模式）会自己打印映射信息
+
+            let local_url = if tunnel_type == TunnelType::Http {
+                format!("http://127.0.0.1:{}", local_port)
+            } else {
+                format!("127.0.0.1:{}", local_port)
+            };
+            let remote_url = if tunnel_type == TunnelType::Http {
+                format!("http://{}:{}", server_host, tunnel.public_port)
+            } else {
+                format!("{}:{}", server_host, tunnel.public_port)
+            };
+            println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
+
             (tunnel.token, tunnel.data_port)
         };
 

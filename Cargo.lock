@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "gout"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "gout-api"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "rand 0.8.7",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "goutd"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "askama",
