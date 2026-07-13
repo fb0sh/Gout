@@ -56,7 +56,7 @@ impl TunnelSession {
                 println!("[+] signal channel established, waiting for connections...");
                 println!("    Ctrl+C to close tunnel");
                 // 进入信号循环
-                Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port).await?;
+                Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port, tunnel.data_port).await?;
             }
         }
 
@@ -79,6 +79,7 @@ impl TunnelSession {
         token: u64,
         tunnel_type: TunnelType,
         local_port: u16,
+        data_port: u16,
     ) -> Result<()> {
         loop {
             tokio::select! {
@@ -86,8 +87,9 @@ impl TunnelSession {
                     match sig {
                         gout_api::data_channel::SignalKind::NewConnection => {
                             let config = config.clone();
+                            let dp = data_port;
                             tokio::spawn(async move {
-                                Self::handle_data_channel(config, token, tunnel_type, local_port).await;
+                                Self::handle_data_channel(config, token, tunnel_type, local_port, dp).await;
                             });
                         }
                         gout_api::data_channel::SignalKind::Disconnected => break,
@@ -162,9 +164,10 @@ impl TunnelSession {
         token: u64,
         tunnel_type: TunnelType,
         local_port: u16,
+        data_port: u16,
     ) {
         let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
-        let data_addr = format!("{server_host}:8081");
+        let data_addr = format!("{server_host}:{data_port}");
         let mut stream = match TcpStream::connect(&data_addr).await {
             Ok(s) => s,
             Err(e) => { eprintln!("[-] connect data port failed: {e}"); return; }
