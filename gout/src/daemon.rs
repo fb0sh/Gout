@@ -16,6 +16,9 @@ pub struct DaemonInfo {
     pub pid: u32,
     pub port: u16,
     pub tunnel_type: String,
+    /// 远端服务器地址（来自 config，可能为空）
+    #[serde(default)]
+    pub server: String,
 }
 
 /// 活跃后台隧道条目（list 输出用）
@@ -25,6 +28,7 @@ pub struct DaemonEntry {
     pub port: u16,
     pub tunnel_type: String,
     pub alive: bool,
+    pub server: String,
 }
 
 // ━━━ Manager ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -124,6 +128,7 @@ impl DaemonManager {
                     port: info.port,
                     tunnel_type: info.tunnel_type,
                     alive: true,
+                    server: info.server,
                 });
             } else {
                 stale.push(path);
@@ -178,10 +183,16 @@ impl DaemonManager {
             .spawn()
             .context("failed to spawn daemon")?;
 
+        // 读取远端服务器地址（可能无 config 或文件不存在）
+        let server = crate::config::read()
+            .map(|c| c.server.addr)
+            .unwrap_or_default();
+
         let info = DaemonInfo {
             pid: child.id(),
             port,
             tunnel_type: tunnel_type.to_string(),
+            server,
         };
         std::fs::write(&pidfile, serde_json::to_string_pretty(&info)?)?;
 
@@ -207,7 +218,7 @@ impl DaemonManager {
 
         Self::terminate(info.pid)?;
         Self::cleanup(&pidfile, &self.logfile(port));
-        println!("[-] tunnel on port {} (PID {}) stopped", port, info.pid);
+        println!("[+] tunnel on port {} (PID {}) stopped", port, info.pid);
         Ok(())
     }
 
@@ -289,6 +300,7 @@ mod tests {
             pid,
             port,
             tunnel_type: "tcp".into(),
+            server: String::new(),
         };
         std::fs::create_dir_all(&mgr.dir).unwrap();
         std::fs::write(
