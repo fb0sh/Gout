@@ -16,9 +16,12 @@ pub struct DaemonInfo {
     pub pid: u32,
     pub port: u16,
     pub tunnel_type: String,
-    /// 远端服务器地址（来自 config，可能为空）
+    /// 远端服务器主机名（来自 config，如 "frp.freet.tech"）
     #[serde(default)]
-    pub server: String,
+    pub server_host: String,
+    /// 远端隧道端口（REST API 返回的 public_port）
+    #[serde(default)]
+    pub public_port: u16,
 }
 
 /// 活跃后台隧道条目（list 输出用）
@@ -28,7 +31,8 @@ pub struct DaemonEntry {
     pub port: u16,
     pub tunnel_type: String,
     pub alive: bool,
-    pub server: String,
+    /// 完整远端地址（如 "frp.freet.tech:10000"）
+    pub remote: String,
 }
 
 // ━━━ Manager ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -123,12 +127,17 @@ impl DaemonManager {
             };
 
             if Self::is_alive(info.pid) {
+                let remote = if info.server_host.is_empty() || info.public_port == 0 {
+                    String::new()
+                } else {
+                    format!("{}:{}", info.server_host, info.public_port)
+                };
                 entries.push(DaemonEntry {
                     pid: info.pid,
                     port: info.port,
                     tunnel_type: info.tunnel_type,
                     alive: true,
-                    server: info.server,
+                    remote,
                 });
             } else {
                 stale.push(path);
@@ -138,7 +147,6 @@ impl DaemonManager {
         // 清理僵尸
         for p in &stale {
             std::fs::remove_file(p).ok();
-            // 同时清理对应的 .log
             if let Some(port) = p.file_stem().and_then(|s| s.to_str()) {
                 if let Ok(port_num) = port.parse::<u16>() {
                     std::fs::remove_file(self.logfile(port_num)).ok();
@@ -149,26 +157,12 @@ impl DaemonManager {
         entries
     }
 
-    /// 启动后台隧道。返回 PID。
+    /// 启动后台隧道（仅前台模式用，不会预先创建隧道）。
     pub fn start(&self, tunnel_type: &str, port: u16) -> Result<u32> {
         self.ensure_dir()?;
         let pidfile = self.pidfile(port);
 
-        // 检查是否已在运行
-        if pidfile.exists() {
-            let content = std::fs::read_to_string(&pidfile)?;
-            if let Ok(info) = serde_json::from_str::<DaemonInfo>(&content) {
-                if Self::is_alive(info.pid) {
-                    anyhow::bail!(
-                        "tunnel on port {} already running (PID {})",
-                        port, info.pid
-                    );
-                }
-            }
-            // 僵尸，清扫
-            std::fs::remove_file(&pidfile)?;
-            std::fs::remove_file(self.logfile(port)).ok();
-        }
+        Self::check_existing(&pidfile, port)?;
 
         let exe = std::env::current_exe().context("cannot get own exe path")?;
         let logfile = self.logfile(port);
@@ -183,16 +177,54 @@ impl DaemonManager {
             .spawn()
             .context("failed to spawn daemon")?;
 
-        // 读取远端服务器地址（可能无 config 或文件不存在）
-        let server = crate::config::read()
-            .map(|c| c.server.addr)
-            .unwrap_or_default();
+        let info = DaemonInfo {
+            pid: child.id(),
+            port,
+            tunnel_type: tunnel_type.to_string(),
+            server_host: String::new(),
+            public_port: 0,
+        };
+        std::fs::write(&pidfile, serde_json::to_string_pretty(&info)?)?;
+
+        Ok(child.id())
+    }
+
+    /// 启动后台隧道（父进程已创建隧道，传入 token + data_port）。
+    pub fn start_with_tunnel(
+        &self,
+        tunnel_type: &str,
+        port: u16,
+        token: u64,
+        data_port: u16,
+        public_port: u16,
+        server_host: &str,
+    ) -> Result<u32> {
+        self.ensure_dir()?;
+        let pidfile = self.pidfile(port);
+
+        Self::check_existing(&pidfile, port)?;
+
+        let exe = std::env::current_exe().context("cannot get own exe path")?;
+        let logfile = self.logfile(port);
+        let log_handle = std::fs::File::create(&logfile).context("create log file")?;
+
+        let child = std::process::Command::new(&exe)
+            .args([tunnel_type, &port.to_string()])
+            .env("GOUT_DAEMON_PIDFILE", pidfile.to_str().unwrap())
+            .env("GOUT_DAEMON_TOKEN", token.to_string())
+            .env("GOUT_DAEMON_DATA_PORT", data_port.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(log_handle.try_clone().context("clone log handle")?)
+            .stderr(log_handle)
+            .spawn()
+            .context("failed to spawn daemon")?;
 
         let info = DaemonInfo {
             pid: child.id(),
             port,
             tunnel_type: tunnel_type.to_string(),
-            server,
+            server_host: server_host.to_string(),
+            public_port,
         };
         std::fs::write(&pidfile, serde_json::to_string_pretty(&info)?)?;
 
@@ -261,6 +293,26 @@ impl DaemonManager {
 
     // ─── 内部 ─────────────────────────────────────────────────
 
+    fn check_existing(pidfile: &Path, port: u16) -> Result<()> {
+        if pidfile.exists() {
+            let content = std::fs::read_to_string(pidfile)?;
+            if let Ok(info) = serde_json::from_str::<DaemonInfo>(&content) {
+                if Self::is_alive(info.pid) {
+                    anyhow::bail!(
+                        "tunnel on port {} already running (PID {})",
+                        port, info.pid
+                    );
+                }
+            }
+            // 僵尸，清扫
+            std::fs::remove_file(pidfile)?;
+            // 也清除对应日志文件
+            let logfile = pidfile.with_extension("log");
+            std::fs::remove_file(logfile).ok();
+        }
+        Ok(())
+    }
+
     fn cleanup(pidfile: &Path, logfile: &Path) {
         std::fs::remove_file(pidfile).ok();
         std::fs::remove_file(logfile).ok();
@@ -273,26 +325,25 @@ impl Default for DaemonManager {
     }
 }
 
+#[cfg(test)]
+impl DaemonManager {
+    /// 测试用：指定目录构造，避免全局 HOME 变量竞争。
+    pub fn test_new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+}
+
 // ━━━ 测试 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn with_temp_dir(f: impl FnOnce(&DaemonManager, &Path)) {
+    fn with_temp_mgr(f: impl FnOnce(&DaemonManager)) {
         let tmp = tempfile::tempdir().expect("temp dir");
-        // 接管 gout_dir 需要覆盖 HOME
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", tmp.path().join("home"));
-
-        let mgr = DaemonManager::new();
-        f(&mgr, tmp.path());
-
-        if let Some(h) = old_home {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
+        let dir = tmp.path().join("daemon");
+        let mgr = DaemonManager::test_new(dir);
+        f(&mgr);
     }
 
     fn write_pid(mgr: &DaemonManager, port: u16, pid: u32) {
@@ -300,7 +351,8 @@ mod tests {
             pid,
             port,
             tunnel_type: "tcp".into(),
-            server: String::new(),
+            server_host: String::new(),
+            public_port: 0,
         };
         std::fs::create_dir_all(&mgr.dir).unwrap();
         std::fs::write(
@@ -312,18 +364,14 @@ mod tests {
 
     #[test]
     fn list_empty_when_no_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path().join("home"));
-        let mgr = DaemonManager::new();
+        let mgr = DaemonManager::test_new(PathBuf::from("/nonexistent/gout/daemon"));
         assert!(mgr.list().is_empty());
     }
 
     #[test]
     fn list_returns_pid_files() {
-        with_temp_dir(|mgr, _| {
-            // 用一个不存在的 PID（大概率不回存在）
+        with_temp_mgr(|mgr| {
             write_pid(mgr, 4000, 999_999_999);
-            // pid 进程不存在，list 应该清扫它
             let entries = mgr.list();
             assert!(entries.is_empty(), "stale PID should be cleaned up");
             assert!(!mgr.pidfile(4000).exists(), "PID file should be removed");
@@ -331,8 +379,28 @@ mod tests {
     }
 
     #[test]
+    fn list_shows_remote() {
+        with_temp_mgr(|mgr| {
+            let info = DaemonInfo {
+                pid: 999_999_999,
+                port: 4000,
+                tunnel_type: "http".into(),
+                server_host: "example.com".into(),
+                public_port: 10001,
+            };
+            std::fs::create_dir_all(&mgr.dir).unwrap();
+            std::fs::write(
+                mgr.pidfile(4000),
+                serde_json::to_string_pretty(&info).unwrap(),
+            )
+            .unwrap();
+            let _entries = mgr.list();
+        });
+    }
+
+    #[test]
     fn kill_missing_port_errors() {
-        with_temp_dir(|mgr, _| {
+        with_temp_mgr(|mgr| {
             let err = mgr.kill(9999).unwrap_err();
             assert!(err.to_string().contains("no daemon record"));
         });
@@ -340,7 +408,7 @@ mod tests {
 
     #[test]
     fn read_log_nonexistent_port() {
-        with_temp_dir(|mgr, _| {
+        with_temp_mgr(|mgr| {
             let err = mgr.read_log(9999).unwrap_err();
             assert!(err.to_string().contains("no log file"));
         });
@@ -348,12 +416,11 @@ mod tests {
 
     #[test]
     fn pidfile_and_logfile_paths() {
-        with_temp_dir(|mgr, _| {
+        with_temp_mgr(|mgr| {
             let pf = mgr.pidfile(4000);
-            assert!(pf.to_string_lossy().ends_with("/daemon/4000.json"));
-
+            assert!(pf.to_string_lossy().ends_with("4000.json"));
             let lf = mgr.logfile(4000);
-            assert!(lf.to_string_lossy().ends_with("/daemon/4000.log"));
+            assert!(lf.to_string_lossy().ends_with("4000.log"));
         });
     }
 }

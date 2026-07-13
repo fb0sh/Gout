@@ -25,10 +25,10 @@ fn cmd_list() -> Result<()> {
         println!("[*] no active tunnels");
         return Ok(());
     }
-    println!("{:>5}  {:<22}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
+    println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", "PORT", "REMOTE", "TYPE", "PID", "STATUS");
     for e in &entries {
-        let remote: &str = if e.server.is_empty() { "-" } else { &e.server };
-        println!("{:>5}  {:<22}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
+        let remote: &str = if e.remote.is_empty() { "-" } else { &e.remote };
+        println!("{:>5}  {:<26}  {:>4}  {:>6}  {:>8}", e.port, remote, e.tunnel_type, e.pid, "alive");
     }
     Ok(())
 }
@@ -47,8 +47,34 @@ fn cmd_tunnel(tunnel_type: &str, local_port: u16) -> Result<()> {
 
 /// 处理 `tcp/udp/http -d` 命令
 fn cmd_start_daemon(tunnel_type: &str, port: u16) -> Result<()> {
+    let cfg = config::read()?;
+    let tt = gout_api::TunnelType::parse(tunnel_type);
+    let server_host = cfg.server.addr.split(':').next().unwrap_or(&cfg.server.addr);
+
+    // 父进程先通过 REST API 创建隧道，拿到 public_port 再交给子进程
+    let rt = tokio::runtime::Runtime::new()?;
+    let (token, data_port, public_port) = rt.block_on(async {
+        let gout = gout_api::client::GoutClient::new(&cfg.server.addr, &cfg.server.api_key);
+        let tun = gout.create_tunnel(tt, port).await?;
+        anyhow::Ok((tun.token, tun.data_port, tun.public_port))
+    })?;
+
+    // 显示隧道映射
+    let local_url = if tt == gout_api::TunnelType::Http {
+        format!("http://127.0.0.1:{port}")
+    } else {
+        format!("127.0.0.1:{port}")
+    };
+    let remote_url = if tt == gout_api::TunnelType::Http {
+        format!("http://{server_host}:{public_port}")
+    } else {
+        format!("{server_host}:{public_port}")
+    };
+    println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
+
+    // 启动子进程（传入已创建的 token）
     let mgr = daemon::DaemonManager::new();
-    let pid = mgr.start(tunnel_type, port)?;
+    let pid = mgr.start_with_tunnel(tunnel_type, port, token, data_port, public_port, server_host)?;
     println!("[+] tunnel started in background (PID: {pid})");
     println!("    `gout list` to check status");
     println!("    `gout log {port}` to view logs");

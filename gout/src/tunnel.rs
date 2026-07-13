@@ -16,33 +16,40 @@ pub struct TunnelSession {
 }
 
 impl TunnelSession {
-    /// 通过 REST API 创建隧道，建立信号通道
+    /// 通过 REST API 创建隧道，建立信号通道。
+    ///
+    /// 如果环境变量 `GOUT_DAEMON_TOKEN` 存在（由 `-d` 的父进程设置），
+    /// 则跳过 REST API 创建，直接使用传入的 token 进行握手。
     pub async fn create(config: crate::config::Config, tunnel_type: TunnelType, local_port: u16) -> Result<Self> {
-        let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
-        let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
-
         let server_host = config.server.addr.split(':').next().unwrap_or(&config.server.addr);
-        let local_url = if tunnel_type == TunnelType::Http {
-            format!("http://127.0.0.1:{}", local_port)
+
+        // 检查是否由父进程（-d）预先创建了隧道
+        let (token, data_port) = if let (Some(t), Some(dp)) = (
+            std::env::var("GOUT_DAEMON_TOKEN").ok(),
+            std::env::var("GOUT_DAEMON_DATA_PORT").ok(),
+        ) {
+            let t: u64 = t.parse()?;
+            let dp: u16 = dp.parse()?;
+            println!("[+] {} tunnel: 127.0.0.1:{} -> {}:{}",
+                tunnel_type, local_port, server_host, "?");
+            (t, dp)
         } else {
-            format!("127.0.0.1:{}", local_port)
+            // 正常模式：通过 REST API 创建
+            let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
+            let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
+            // 父进程（-d 模式）会自己打印映射信息
+            (tunnel.token, tunnel.data_port)
         };
-        let remote_url = if tunnel_type == TunnelType::Http {
-            format!("http://{}:{}", server_host, tunnel.public_port)
-        } else {
-            format!("{}:{}", server_host, tunnel.public_port)
-        };
-        println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
 
         // 连接数据端口 + 握手
-        let data_addr = format!("{}:{}", server_host, tunnel.data_port);
+        let data_addr = format!("{}:{}", server_host, data_port);
         let mut stream = TcpStream::connect(&data_addr)
             .await
             .context("connect to data port failed")?;
 
         gout_api::data_channel::client_handshake(
             &mut stream,
-            tunnel.token,
+            token,
             tunnel_type,
         ).await.context("handshake failed")?;
 
@@ -55,17 +62,17 @@ impl TunnelSession {
             _ => {
                 println!("[+] signal channel established, waiting for connections...");
                 println!("    Ctrl+C to close tunnel");
-                // 进入信号循环
-                Self::run_signal_loop(stream, &config, tunnel.token, tunnel_type, local_port, tunnel.data_port).await?;
+                Self::run_signal_loop(stream, &config, token, tunnel_type, local_port, data_port).await?;
             }
         }
 
         // 清理
         println!("[-] closing tunnel...");
-        gout.delete_tunnel(tunnel.token).await.ok();
+        let gout = gout_api::client::GoutClient::new(&config.server.addr, &config.server.api_key);
+        gout.delete_tunnel(token).await.ok();
 
         Ok(Self {
-            token: tunnel.token,
+            token,
             tunnel_type,
             local_port,
             config,
