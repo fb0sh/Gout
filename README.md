@@ -12,10 +12,11 @@
 - **零配置客户端**：`gout login server:8080 key` → `gout tcp 4000`，无需手写配置文件
 - **Web 管理面板**：在浏览器中管理 API key、查看活跃隧道、添加备注
 - **REST 控制面**：隧道通过 HTTP API 创建和销毁，不依赖配置文件热加载
-- **多协议支持**：TCP、UDP 和 HTTP（v0.1 中 HTTP 是 TCP 别名）
-- **信号通道架构**：每个隧道一条轻量控制连接，通知客户端有新的外部连接；每条连接使用独立的数据通道
+- **多协议支持**：TCP、UDP 和 HTTP（HTTP 当前等价于 TCP）
+- **信号通道架构**：TCP 隧道每条一个信号通道 + 每条外部连接一个独立数据通道
+- **UDP 隧道**：一条持久数据通道承载帧封装的数据报，双向转发
 - **Token 认证**：每个隧道分配一个随机 64 位 token，用于数据通道身份验证
-- **端口池管理**：基于空闲池的端口分配，无碎片问题
+- **端口池管理**：基于空闲池的端口分配，默认可用 22,768 个端口，自动避开系统临时端口
 - **自动清理**：客户端 30 秒内未完成数据通道握手时隧道自动过期；控制连接断开时全部清理
 
 ## 架构
@@ -33,12 +34,18 @@ gout (CLI)  ──REST──►  goutd :8080 (HTTP API + Web 面板)
 
 ## 安装
 
+### 从 crates.io
+
 ```bash
 cargo install goutd    # 服务端
 cargo install gout     # 客户端
 ```
 
-或从源码编译：
+### 从 GitHub Releases
+
+从 [Releases 页面](https://github.com/fb0sh/Gout/releases) 下载对应平台的二进制（Linux x86_64 / ARM64 / i686、macOS Apple Silicon / Intel、Windows x64），无需安装 Rust。
+
+### 从源码编译
 ```bash
 git clone https://github.com/fb0sh/Gout.git
 cd Gout
@@ -47,7 +54,7 @@ cargo build -p goutd -p gout
 
 Rust SDK（在 `Cargo.toml` 中添加）：
 ```toml
-gout-api = "0.1"
+gout-api = "0.2"
 ```
 
 ## 快速开始
@@ -63,6 +70,8 @@ goutd
 #   Initial admin key: sk-xxxxxxxxxxxx
 #   Save this key! It won't be shown again.
 # ──────────────────────────────────────────
+# system ephemeral port range: 32768-60999
+# tunnel port range: 10000-32767 (22768 ports)
 # HTTP server listening on http://127.0.0.1:8080
 # Data server listening on 0.0.0.0:8081
 ```
@@ -79,7 +88,9 @@ ssh -L 8080:localhost:8080 your-server
 ```bash
 # 通过 Web 面板创建普通 API key，然后：
 gout login server.example.com:8080 sk-xxxxxxxxxxxx
-gout tcp 4000     # 将本地 localhost:4000 暴露到公网
+gout tcp 4000        # 将本地 localhost:4000 暴露到公网
+gout udp 53          # UDP 隧道（DNS 等）
+gout http 8080       # HTTP 隧道，URL 格式提示
 ```
 
 ---
@@ -180,8 +191,8 @@ X-Api-Key: <tunnel-key>
 | type | 说明 |
 |------|------|
 | `tcp` | TCP 隧道，每个外部连接一条独立数据通道 |
-| `udp` | UDP 隧道，一条持久数据通道承载数据报帧 |
-| `http` | v0.1 等价于 `tcp` |
+| `udp` | UDP 隧道，一条持久数据通道承载数据报帧，双向转发 |
+| `http` | 等价于 `tcp`（URL 格式显示 `http://` 路径） |
 
 ---
 
@@ -190,18 +201,27 @@ X-Api-Key: <tunnel-key>
 创建隧道后的数据通道握手流程：
 
 ```
+TCP 隧道:
 客户端                           服务端
   │                                │
   │── [token: u64 BE][type: u8] ──►│  握手（9 字节）
   │◄──── [status: u8] ─────────────│  0x01=OK, 0x00=Error
   │                                │
-  │  （TCP：信号通道循环）           │
+  │  （信号通道循环）               │
   │◄──── [0x02] ───────────────────│  新外部连接通知
   │                                │
   │  客户端另开连接：                │
   │── [token][type] ──────────────►│  数据通道握手
   │◄──── [0x01] ──────────────────│  OK
   │══════ raw bytes ══════════════│  双向 pipe
+
+UDP 隧道:
+客户端                           服务端
+  │                                │
+  │── [token: u64 BE][type: u8] ──►│  握手（9 字节）
+  │◄──── [status: u8] ─────────────│  0x01=OK
+  │══════ [len: u16][data] ═══════│  持久双向帧通道
+  │        len=0 = 关闭信号       │
 ```
 
 UDP 隧道使用帧格式：
