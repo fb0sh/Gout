@@ -44,6 +44,9 @@ impl TunnelSession {
         let server_host = resolve_host(
             server.addr.split(':').next().unwrap_or(&server.addr)
         ).await;
+        // REST API 地址也用 IP（避免重复 DNS）
+        let server_port = server.addr.split(':').nth(1).unwrap_or("8080");
+        let resolved_addr = format!("{}:{}", server_host, server_port);
 
         // 检查是否由父进程（-d）预先创建了隧道
         let (token, data_port) = if let (Ok(t), Ok(dp)) = (
@@ -57,7 +60,7 @@ impl TunnelSession {
             (t, dp)
         } else {
             // 正常模式：通过 REST API 创建
-            let gout = gout_api::client::GoutClient::new(&server.addr, &server.api_key);
+            let gout = gout_api::client::GoutClient::new(&resolved_addr, &server.api_key);
             let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
 
             let local_url = if tunnel_type == TunnelType::Http {
@@ -102,7 +105,7 @@ impl TunnelSession {
 
         // 清理
         println!("[-] closing tunnel...");
-        let gout = gout_api::client::GoutClient::new(&server.addr, &server.api_key);
+        let gout = gout_api::client::GoutClient::new(&resolved_addr, &server.api_key);
         gout.delete_tunnel(token).await.ok();
 
         Ok(Self {

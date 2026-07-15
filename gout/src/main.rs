@@ -125,17 +125,20 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
 
     let rt = tokio::runtime::Runtime::new()?;
     let (token, data_port, public_port, server_host) = rt.block_on(async {
-        let gout = gout_api::client::GoutClient::new(&sc.addr, &sc.api_key);
-        let tun = gout.create_tunnel(tt, port).await?;
-        // 解析域名（如果配的是域名）
+        // REST API 也用 IP
         let host = sc.addr.split(':').next().unwrap_or(&sc.addr);
-        let resolved = tokio::net::lookup_host(format!("{host}:0"))
+        let server_port = sc.addr.split(':').nth(1).unwrap_or("8080");
+        let resolved_host = tokio::net::lookup_host(format!("{host}:0"))
             .await
             .ok()
             .and_then(|mut a| a.next())
             .map(|sa| sa.ip().to_string())
             .unwrap_or_else(|| host.to_string());
-        anyhow::Ok((tun.token, tun.data_port, tun.public_port, resolved))
+        let resolved_addr = format!("{}:{}", resolved_host, server_port);
+
+        let gout = gout_api::client::GoutClient::new(&resolved_addr, &sc.api_key);
+        let tun = gout.create_tunnel(tt, port).await?;
+        anyhow::Ok((tun.token, tun.data_port, tun.public_port, resolved_host))
     })?;
 
     let local_url = if tt == gout_api::TunnelType::Http {
