@@ -7,6 +7,16 @@ use tokio::net::{TcpStream, UdpSocket};
 
 use gout_api::{TunnelType, UDP_FRAME_HEADER};
 
+/// 解析域名到 IP，解析失败则返回原域名。
+async fn resolve_host(host: &str) -> String {
+    tokio::net::lookup_host(format!("{host}:0"))
+        .await
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .map(|sa| sa.ip().to_string())
+        .unwrap_or_else(|| host.to_string())
+}
+
 /// 隧道会话：REST 创建 → 握手 → 信号循环 → 数据转发 → 清理
 pub struct TunnelSession {
     pub token: u64,
@@ -31,7 +41,9 @@ impl TunnelSession {
     /// 如果环境变量 `GOUT_DAEMON_TOKEN` 存在（由 `-d` 的父进程设置），
     /// 则跳过 REST API 创建，直接使用传入的 token 进行握手。
     pub async fn create(server: crate::config::ServerConfig, tunnel_type: TunnelType, local_port: u16) -> Result<Self> {
-        let server_host = server.addr.split(':').next().unwrap_or(&server.addr);
+        let server_host = resolve_host(
+            server.addr.split(':').next().unwrap_or(&server.addr)
+        ).await;
 
         // 检查是否由父进程（-d）预先创建了隧道
         let (token, data_port) = if let (Ok(t), Ok(dp)) = (
@@ -195,7 +207,9 @@ impl TunnelSession {
         local_port: u16,
         data_port: u16,
     ) {
-        let server_host = server.addr.split(':').next().unwrap_or(&server.addr);
+        let server_host = resolve_host(
+            server.addr.split(':').next().unwrap_or(&server.addr)
+        ).await;
         let data_addr = format!("{server_host}:{data_port}");
         let mut stream = match TcpStream::connect(&data_addr).await {
             Ok(s) => s,

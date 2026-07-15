@@ -122,13 +122,20 @@ fn cmd_tunnel(tunnel_type: &str, local_port: u16, server: Option<&str>) -> Resul
 fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Result<()> {
     let sc = resolve_server(server)?;
     let tt = gout_api::TunnelType::parse(tunnel_type);
-    let server_host = sc.addr.split(':').next().unwrap_or(&sc.addr);
 
     let rt = tokio::runtime::Runtime::new()?;
-    let (token, data_port, public_port) = rt.block_on(async {
+    let (token, data_port, public_port, server_host) = rt.block_on(async {
         let gout = gout_api::client::GoutClient::new(&sc.addr, &sc.api_key);
         let tun = gout.create_tunnel(tt, port).await?;
-        anyhow::Ok((tun.token, tun.data_port, tun.public_port))
+        // 解析域名（如果配的是域名）
+        let host = sc.addr.split(':').next().unwrap_or(&sc.addr);
+        let resolved = tokio::net::lookup_host(format!("{host}:0"))
+            .await
+            .ok()
+            .and_then(|mut a| a.next())
+            .map(|sa| sa.ip().to_string())
+            .unwrap_or_else(|| host.to_string());
+        anyhow::Ok((tun.token, tun.data_port, tun.public_port, resolved))
     })?;
 
     let local_url = if tt == gout_api::TunnelType::Http {
@@ -144,7 +151,7 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
     println!("[+] {} tunnel: {} -> {}", tunnel_type, local_url, remote_url);
 
     let mgr = daemon::DaemonManager::new();
-    let pid = mgr.start_with_tunnel(tunnel_type, port, token, data_port, public_port, server_host)?;
+    let pid = mgr.start_with_tunnel(tunnel_type, port, token, data_port, public_port, &server_host)?;
     println!("[+] tunnel started in background (PID: {pid})");
     println!("    `gout ls` to check status");
     println!("    `gout log {port}` to view logs");
