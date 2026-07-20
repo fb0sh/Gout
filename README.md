@@ -20,7 +20,7 @@
 - **信号通道架构**：TCP 隧道每条一个信号通道 + 每条外部连接一个独立数据通道
 - **UDP 隧道**：一条持久数据通道承载帧封装的数据报，双向转发
 - **Token 认证**：每个隧道分配一个随机 64 位 token，用于数据通道身份验证
-- **端口分配**：游标扫描 + 操作系统 bind() 确认，AddrInUse 自动换端口，默认可用 22,768 个端口
+- **端口分配**：游标扫描 + 操作系统 bind() 确认，AddrInUse 自动换端口，默认可用 22,768 个端口；支持 `-r` 指定远程端口
 - **自动清理**：客户端 30 秒内未完成数据通道握手时隧道自动过期；控制连接断开时全部清理
 
 ## 架构
@@ -118,6 +118,7 @@ gout tcp 8080 -d
 # 按 server 选择
 gout tcp 8080 -s dev         # 用 dev server
 gout tcp 8080 -s prod        # 用 prod server
+gout tcp 8080 -r 10080       # 指定远程端口 10080
 
 # 管理后台隧道
 gout ls
@@ -241,7 +242,7 @@ POST /api/v1/tunnels
 X-Api-Key: <tunnel-key>
 Content-Type: application/json
 
-{"type": "tcp", "local_port": 4000}
+{"type": "tcp", "local_port": 4000, "remote_port": 10080}
 ```
 
 ```json
@@ -336,7 +337,7 @@ use gout_api::TunnelType;
 let gout = GoutClient::new("server.example.com:8080", "sk-xxxx...");
 
 // 创建隧道
-let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000).await?;
+let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000, None).await?;
 println!("公网端口: {}", tunnel.public_port);
 
 // 连接数据端口（握手由 data_channel 模块处理）
@@ -436,9 +437,10 @@ Arguments:
   <PORT>  本地端口号
 
 Options:
-  -d, --detach          后台运行
-  -s, --server <SERVER>  服务器名称或地址（默认使用配置中的 default_server）
-  -h, --help            Print help
+  -d, --detach                 后台运行
+  -s, --server <SERVER>        服务器名称或地址（默认使用配置中的 default_server）
+  -r, --remote-port <REMOTE_PORT>  远端公网端口（可选，不指定由服务端自动分配）
+  -h, --help                  Print help
 
 $ gout ls --help
 列出本地后台隧道（按 server 分组）。
