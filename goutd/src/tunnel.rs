@@ -153,55 +153,75 @@ impl TunnelManager {
         self.data_port
     }
 
-    /// 创建隧道。循环尝试候选端口直到 bind 成功或耗尽。
+    /// 创建隧道。
+    ///
+    /// 如果 `remote_port` 指定，直接 bind 该端口（失败则报错）；
+    /// 否则循环尝试 PortAllocator 候选端口直到 bind 成功或耗尽。
     pub async fn create_tunnel(
         self: &Arc<Self>,
         tunnel_type: TunnelType,
         key_name: String,
         bind_ip: std::net::IpAddr,
+        remote_port: Option<u16>,
     ) -> Result<(Token, u16), String> {
         match tunnel_type {
             TunnelType::Tcp | TunnelType::Http => {
-                self.create_tcp_tunnel(tunnel_type, key_name, bind_ip).await
+                self.create_tcp_tunnel(tunnel_type, key_name, bind_ip, remote_port).await
             }
             TunnelType::Udp => {
-                self.create_udp_tunnel(key_name, bind_ip).await
+                self.create_udp_tunnel(key_name, bind_ip, remote_port).await
             }
         }
     }
 
-    /// TCP/HTTP 隧道：bind 循环 → spawn listener
+    /// TCP/HTTP 隧道：指定端口直接 bind，否则 bind 循环 → spawn listener
     async fn create_tcp_tunnel(
         self: &Arc<Self>,
         tunnel_type: TunnelType,
         key_name: String,
         bind_ip: std::net::IpAddr,
+        remote_port: Option<u16>,
     ) -> Result<(Token, u16), String> {
         let token = gout_api::generate_token();
 
-        // bind 循环：尝试候选端口，AddrInUse 则换下一个
-        let (listener, port) = loop {
-            let port = {
-                let mut alloc = self.allocator.lock().await;
-                let port = alloc.next_candidate().ok_or("no free ports")?;
-                port
-            };
-
+        let (listener, port) = if let Some(port) = remote_port {
+            // 直接尝试 bind 指定端口，失败即报错
             let addr = SocketAddr::new(bind_ip, port);
-            match TcpListener::bind(addr).await {
-                Ok(l) => {
-                    // bind 成功，确认分配
-                    self.allocator.lock().await.confirm(port);
-                    break (l, port);
+            let listener = TcpListener::bind(addr).await.map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    format!("remote port {port} is already in use")
+                } else {
+                    format!("bind TCP on {bind_ip}:{port}: {e}")
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                    // 端口已被占用，放弃该候选
-                    self.allocator.lock().await.reject(port);
-                    continue;
-                }
-                Err(e) => {
-                    self.allocator.lock().await.reject(port);
-                    return Err(format!("bind TCP on {bind_ip}: {e}"));
+            })?;
+            // bind 成功，登记到 allocator 的 allocated 集合
+            self.allocator.lock().await.confirm(port);
+            (listener, port)
+        } else {
+            // bind 循环：尝试候选端口，AddrInUse 则换下一个
+            loop {
+                let port = {
+                    let mut alloc = self.allocator.lock().await;
+                    let port = alloc.next_candidate().ok_or("no free ports")?;
+                    port
+                };
+
+                let addr = SocketAddr::new(bind_ip, port);
+                match TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        // bind 成功，确认分配
+                        self.allocator.lock().await.confirm(port);
+                        break (l, port);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        // 端口已被占用，放弃该候选
+                        self.allocator.lock().await.reject(port);
+                        continue;
+                    }
+                    Err(e) => {
+                        self.allocator.lock().await.reject(port);
+                        return Err(format!("bind TCP on {bind_ip}: {e}"));
+                    }
                 }
             }
         };
@@ -233,34 +253,50 @@ impl TunnelManager {
         Ok((token, port))
     }
 
-    /// UDP 隧道：bind 循环 → 存储 socket
+    /// UDP 隧道：指定端口直接 bind，否则 bind 循环 → 存储 socket
     async fn create_udp_tunnel(
         self: &Arc<Self>,
         key_name: String,
         bind_ip: std::net::IpAddr,
+        remote_port: Option<u16>,
     ) -> Result<(Token, u16), String> {
         let token = gout_api::generate_token();
 
-        let (socket, port) = loop {
-            let port = {
-                let mut alloc = self.allocator.lock().await;
-                let port = alloc.next_candidate().ok_or("no free ports")?;
-                port
-            };
-
+        let (socket, port) = if let Some(port) = remote_port {
+            // 直接尝试 bind 指定端口，失败即报错
             let addr = SocketAddr::new(bind_ip, port);
-            match UdpSocket::bind(addr).await {
-                Ok(s) => {
-                    self.allocator.lock().await.confirm(port);
-                    break (Arc::new(s), port);
+            let socket = UdpSocket::bind(addr).await.map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    format!("remote port {port} is already in use")
+                } else {
+                    format!("bind UDP on {bind_ip}:{port}: {e}")
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                    self.allocator.lock().await.reject(port);
-                    continue;
-                }
-                Err(e) => {
-                    self.allocator.lock().await.reject(port);
-                    return Err(format!("bind UDP on {bind_ip}: {e}"));
+            })?;
+            // bind 成功，登记到 allocator 的 allocated 集合
+            self.allocator.lock().await.confirm(port);
+            (Arc::new(socket), port)
+        } else {
+            loop {
+                let port = {
+                    let mut alloc = self.allocator.lock().await;
+                    let port = alloc.next_candidate().ok_or("no free ports")?;
+                    port
+                };
+
+                let addr = SocketAddr::new(bind_ip, port);
+                match UdpSocket::bind(addr).await {
+                    Ok(s) => {
+                        self.allocator.lock().await.confirm(port);
+                        break (Arc::new(s), port);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        self.allocator.lock().await.reject(port);
+                        continue;
+                    }
+                    Err(e) => {
+                        self.allocator.lock().await.reject(port);
+                        return Err(format!("bind UDP on {bind_ip}: {e}"));
+                    }
                 }
             }
         };
@@ -583,7 +619,7 @@ mod tests {
     async fn test_create_tunnel_allocates_port() {
         let mgr = make_mgr();
         let (token, port) = mgr
-            .create_tunnel(TunnelType::Tcp, "test".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "test".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
         assert!(token != 0);
@@ -599,11 +635,11 @@ mod tests {
     async fn test_create_tunnel_port_exhaustion() {
         let mgr = Arc::new(TunnelManager::new(30000, 30000, 8081));
         let (_, _) = mgr
-            .create_tunnel(TunnelType::Tcp, "a".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "a".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
         let r = mgr
-            .create_tunnel(TunnelType::Tcp, "b".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "b".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await;
         assert!(r.is_err());
     }
@@ -612,7 +648,7 @@ mod tests {
     async fn test_signal_channel_registration() {
         let mgr = make_mgr();
         let (token, _) = mgr
-            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
 
@@ -627,7 +663,7 @@ mod tests {
     async fn test_close_tunnel_frees_port() {
         let mgr = make_mgr();
         let (token, _port) = mgr
-            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
 
@@ -642,7 +678,7 @@ mod tests {
     async fn test_add_pending_conn_without_signal_fails() {
         let mgr = make_mgr();
         let (token, _) = mgr
-            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "t".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
         let r = mgr.take_pending_conn(token).await;
@@ -655,7 +691,7 @@ mod tests {
         assert!(mgr.list_tunnels().await.is_empty());
 
         let (token, _) = mgr
-            .create_tunnel(TunnelType::Tcp, "my key".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .create_tunnel(TunnelType::Tcp, "my key".into(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), None)
             .await
             .unwrap();
 

@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 /// use gout_api::TunnelType;
 ///
 /// let gout = GoutClient::new("server.example.com:8080", "sk-your-key");
-/// let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000).await.unwrap();
+/// let tunnel = gout.create_tunnel(TunnelType::Tcp, 4000, None).await.unwrap();
 /// gout.delete_tunnel(tunnel.token).await.unwrap();
 /// # }
 /// ```
@@ -53,10 +53,12 @@ impl GoutClient {
     ///
     /// * `tunnel_type` — 隧道协议类型（TCP / UDP / HTTP）
     /// * `local_port` — 本地服务端口号
+    /// * `remote_port` — 远端公网端口号（可选，`None` 由服务端自动分配）
     pub async fn create_tunnel(
         &self,
         tunnel_type: crate::TunnelType,
         local_port: u16,
+        remote_port: Option<u16>,
     ) -> Result<TunnelResponse> {
         let resp = self
             .inner
@@ -65,6 +67,7 @@ impl GoutClient {
             .json(&CreateTunnelRequest {
                 tunnel_type,
                 local_port: Some(local_port),
+                remote_port,
             })
             .send()
             .await

@@ -108,18 +108,18 @@ fn resolve_server(server: Option<&str>) -> Result<config::ServerConfig> {
     )
 }
 
-fn cmd_tunnel(tunnel_type: &str, local_port: u16, server: Option<&str>) -> Result<()> {
+fn cmd_tunnel(tunnel_type: &str, local_port: u16, server: Option<&str>, remote_port: Option<u16>) -> Result<()> {
     let sc = resolve_server(server)?;
     let tt = gout_api::TunnelType::parse(tunnel_type);
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        tunnel::TunnelSession::create(sc, tt, local_port).await?;
+        tunnel::TunnelSession::create(sc, tt, local_port, remote_port).await?;
         Ok(())
     })
 }
 
-fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Result<()> {
+fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>, remote_port: Option<u16>) -> Result<()> {
     let sc = resolve_server(server)?;
     let tt = gout_api::TunnelType::parse(tunnel_type);
 
@@ -137,7 +137,7 @@ fn cmd_start_daemon(tunnel_type: &str, port: u16, server: Option<&str>) -> Resul
         let resolved_addr = format!("{}:{}", resolved_host, server_port);
 
         let gout = gout_api::client::GoutClient::new(&resolved_addr, &sc.api_key);
-        let tun = gout.create_tunnel(tt, port).await?;
+        let tun = gout.create_tunnel(tt, port, remote_port).await?;
         anyhow::Ok((tun.token, tun.data_port, tun.public_port, resolved_host))
     })?;
 

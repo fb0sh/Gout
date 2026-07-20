@@ -184,6 +184,9 @@ pub struct CreateTunnelRequest {
     /// 本地端口号（可选，供服务端记录）
     #[serde(default)]
     pub local_port: Option<u16>,
+    /// 远程端口号（可选，指定服务端公网端口）
+    #[serde(default)]
+    pub remote_port: Option<u16>,
 }
 
 /// 创建隧道响应体。
@@ -409,6 +412,7 @@ mod tests {
         let req = CreateTunnelRequest {
             tunnel_type: TunnelType::Tcp,
             local_port: Some(4000),
+            remote_port: None,
         };
         let j = serde_json::to_string(&req).unwrap();
         assert!(j.contains("\"type\":\"tcp\""));
@@ -416,6 +420,20 @@ mod tests {
         let parsed: CreateTunnelRequest = serde_json::from_str(&j).unwrap();
         assert_eq!(parsed.tunnel_type, TunnelType::Tcp);
         assert_eq!(parsed.local_port, Some(4000));
+        assert_eq!(parsed.remote_port, None);
+    }
+
+    #[test]
+    fn create_tunnel_request_with_remote_port() {
+        let req = CreateTunnelRequest {
+            tunnel_type: TunnelType::Tcp,
+            local_port: Some(4000),
+            remote_port: Some(10080),
+        };
+        let j = serde_json::to_string(&req).unwrap();
+        assert!(j.contains("\"remote_port\":10080"));
+        let parsed: CreateTunnelRequest = serde_json::from_str(&j).unwrap();
+        assert_eq!(parsed.remote_port, Some(10080));
     }
 
     #[test]
@@ -424,6 +442,7 @@ mod tests {
         let req: CreateTunnelRequest = serde_json::from_str(j).unwrap();
         assert_eq!(req.tunnel_type, TunnelType::Udp);
         assert_eq!(req.local_port, None);
+        assert_eq!(req.remote_port, None);
     }
 
     #[test]

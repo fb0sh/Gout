@@ -55,7 +55,7 @@ pub async fn create_tunnel(
         }
     };
 
-    match state.tunnel_mgr.create_tunnel(req.tunnel_type, key_name, "0.0.0.0".parse().unwrap()).await {
+    match state.tunnel_mgr.create_tunnel(req.tunnel_type, key_name, "0.0.0.0".parse().unwrap(), req.remote_port).await {
         Ok((token, port)) => {
             let resp = TunnelResponse {
                 token,

@@ -40,7 +40,7 @@ impl TunnelSession {
     ///
     /// 如果环境变量 `GOUT_DAEMON_TOKEN` 存在（由 `-d` 的父进程设置），
     /// 则跳过 REST API 创建，直接使用传入的 token 进行握手。
-    pub async fn create(server: crate::config::ServerConfig, tunnel_type: TunnelType, local_port: u16) -> Result<Self> {
+    pub async fn create(server: crate::config::ServerConfig, tunnel_type: TunnelType, local_port: u16, remote_port: Option<u16>) -> Result<Self> {
         let server_host = resolve_host(
             server.addr.split(':').next().unwrap_or(&server.addr)
         ).await;
@@ -61,7 +61,7 @@ impl TunnelSession {
         } else {
             // 正常模式：通过 REST API 创建
             let gout = gout_api::client::GoutClient::new(&resolved_addr, &server.api_key);
-            let tunnel = gout.create_tunnel(tunnel_type, local_port).await?;
+            let tunnel = gout.create_tunnel(tunnel_type, local_port, remote_port).await?;
 
             let local_url = if tunnel_type == TunnelType::Http {
                 format!("http://127.0.0.1:{}", local_port)

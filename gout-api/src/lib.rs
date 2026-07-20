@@ -19,7 +19,7 @@
 //! use gout_api::TunnelType;
 //!
 //! let gout = GoutClient::new("server:8080", "sk-xxx");
-//! let tun = gout.create_tunnel(TunnelType::Tcp, 4000).await.unwrap();
+//! let tun = gout.create_tunnel(TunnelType::Tcp, 4000, None).await.unwrap();
 //! gout.delete_tunnel(tun.token).await.unwrap();
 //!
 //! let admin = GoutAdminClient::new("server:8080", "admin-key");
